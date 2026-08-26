@@ -36,10 +36,11 @@ inline constexpr std::size_t kRosterSlotCapacity = 1280;
 inline constexpr std::size_t kDestinationGroupCapacity = 48;
 /**
  * Roster groups one destination publishes per bubble.
- * A group qualifies only when it is in some of the destination's slice sets and not all, so this
- * is a small set: the widest measured destination reaches one of its six keys that way.
+ * A group qualifies only when it is in some of the destination's slice sets and not all. Nearly
+ * every one of the Tower's 112 admitted event keys is bubble-specific, so they all land here, and
+ * publish_per_bubble truncates past this silently - which key survives depends on candidate order.
  */
-inline constexpr std::size_t kDestinationBubbleGroupCapacity = 48;
+inline constexpr std::size_t kDestinationBubbleGroupCapacity = 160;
 /** A per-bubble group's bubble mask, one bit per bubble, as it is stored on disk. */
 inline constexpr std::size_t kBubbleMaskBytes = kBubbleCapacity / 8;
 /** Slot flag bit for a slot whose type declares a sense schema. */

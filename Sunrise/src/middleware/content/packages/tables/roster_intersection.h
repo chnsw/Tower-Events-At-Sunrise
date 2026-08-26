@@ -17,10 +17,13 @@ namespace sunrise::middleware::content::packages::tables {
 inline constexpr std::size_t kSliceSetCapacity = 64;
 /**
  * Roster keys tracked for one destination.
- * No installed destination reaches more than 2 objects carrying a wire slot type. This leaves
- * room to spare without a heap allocation.
+ * No installed destination reaches more than 2 objects carrying a wire slot type, but the event
+ * admission below adds the Tower's 112 registry keys on top of that. At the old capacity of 16 the
+ * Tower's walk filled the table, set `overflowed`, and the destination published nothing - not even
+ * its wire keys - which broke every bubble grant: the Bazaar loaded into the void and the next boot
+ * hung on the Tower load screen. Measured on 2026-08-27.
  */
-inline constexpr std::size_t kRosterKeyCapacity = 16;
+inline constexpr std::size_t kRosterKeyCapacity = 160;
 
 static_assert(kSliceSetCapacity * kSliceSetIndexFactor == 512);
 // One bit per slice set, so the mask must cover the whole capacity.
