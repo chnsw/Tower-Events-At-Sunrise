@@ -169,11 +169,19 @@ bool resolve_object(const reader::Source& source,
             }
         }
     }
-    // carries_roster_slot is kept as the admission gate. Removing it entirely was measured on
+    // Admission. carries_roster_slot stays the general gate: removing it entirely was measured on
     // 2026-08-26 and saturates kRosterGroupCapacity (groups=512) before the walk finishes, which
-    // aborts destinations wholesale - the original comment's warning is correct.
+    // aborts destinations wholesale, so the original comment's warning is correct.
+    //
+    // It is not sufficient on its own. Every Tower seasonal event is carried by one placed object
+    // with its own registry key, and all seven declare real slots (2 to 29) while declaring NO
+    // wire slot type - measured 2026-08-26, wire=0 on every one. So the wire-type gate rejects
+    // every event, which is why the Tower published one group instead of thirty-six and no
+    // per-bubble sub-block at all. Admitting them by key restores the events and costs seven
+    // groups, and makes each event independently selectable through the existing exclude file.
     if (!tables::object_key(storage.object, candidate.registryKey) || candidate.registryKey == 0
-        || !tables::carries_roster_slot(storage.object)
+        || !(tables::carries_roster_slot(storage.object)
+             || tables::is_event_roster_key(candidate.registryKey))
         || !tables::object_slots(storage.object, declared) || declared.count == 0
         || declared.count > layouts::kRosterSlotCapacity) {
         return true;

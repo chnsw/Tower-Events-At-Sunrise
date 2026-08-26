@@ -67,6 +67,30 @@ inline constexpr std::array<std::uint16_t, 9> kRosterSlotTypes = {
 [[nodiscard]] bool carries_roster_slot(std::span<const std::byte> object) noexcept;
 
 /**
+ * The registry keys of the Tower's seasonal event objects.
+ * Each event is carried by one placed object with its own key. None of them declares a wire slot
+ * type, so `carries_roster_slot` rejects every one and the event never reaches the roster. They are
+ * admitted by key instead. Attribution is the six-run group test recorded in the knowledge graph as
+ * `event-keys`; `0x50CC9C7D` is a real group that renders nothing visible and is kept so it can be
+ * told apart from a missing one rather than silently dropped.
+ */
+inline constexpr std::array<std::uint32_t, 7> kEventRosterKeys = {
+    0x7C6DE64FU,   // Festival of the Lost
+    0x27060E6CU,   // Iron Banner
+    0x6CEFCC01U,   // Crimson Days
+    0xD5B68262U,   // Solstice of Heroes
+    0x00ACD208U,   // The Dawning
+    0x4F4ED92FU,   // bazaar urns
+    0x50CC9C7DU};  // renders nothing visible
+
+/**
+ * Tests whether one registry key names a Tower seasonal event object.
+ * @param registryKey Registry key read from a placed object.
+ * @return True when the key is one of the event keys.
+ */
+[[nodiscard]] bool is_event_roster_key(std::uint32_t registryKey) noexcept;
+
+/**
  * Records a slice set the destination reaches, whether or not it holds a roster object.
  * The intersection is over every slice set of the destination, so a slice set that holds no
  * candidate still has to count. Leaving it out makes an unsafe key look safe.

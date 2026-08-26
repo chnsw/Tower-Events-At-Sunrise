@@ -113,6 +113,15 @@ void observe_unresolved_slice_set(RosterIntersection& state) noexcept {
  * @param count Receives how many were written.
  * @return True when nothing overflowed and every safe key fits the output.
  */
+bool is_event_roster_key(std::uint32_t registryKey) noexcept {
+    for (const std::uint32_t key : kEventRosterKeys) {
+        if (key == registryKey) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool safe_roster_keys(const RosterIntersection& state,
                       std::span<std::uint32_t> output,
                       std::size_t& count) noexcept {
