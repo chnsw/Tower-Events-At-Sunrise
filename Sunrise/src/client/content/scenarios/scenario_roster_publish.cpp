@@ -126,6 +126,21 @@ void report_publish(const Walk& walk, const layouts::Definition& row,
                             " m%zu=0x%llX", index,
                             static_cast<unsigned long long>(row.bubbleGroupMasks[index]));
     }
+    // The raw intersection. A key is dropped as neither safe nor partial when its mask is zero,
+    // meaning it was never observed in ANY slice set of this destination - which is a different
+    // failure from being observed in only some. Print every key so the two can be told apart.
+    if (at > 0) {
+        at += std::snprintf(line.data() + at, line.size() - static_cast<std::size_t>(at),
+                            " obs=0x%llX keys=%zu",
+                            static_cast<unsigned long long>(walk.intersection.observedSets),
+                            walk.intersection.keyCount);
+        for (std::size_t index = 0; index < walk.intersection.keyCount && at > 0; ++index) {
+            at += std::snprintf(line.data() + at, line.size() - static_cast<std::size_t>(at),
+                                " k%zu=0x%X/0x%llX", index,
+                                walk.intersection.keys[index],
+                                static_cast<unsigned long long>(walk.intersection.masks[index]));
+        }
+    }
     if (at > 0) {
         core::log::write(core::log::Channel::state,
                          truncated ? core::log::Level::warn : core::log::Level::debug,
