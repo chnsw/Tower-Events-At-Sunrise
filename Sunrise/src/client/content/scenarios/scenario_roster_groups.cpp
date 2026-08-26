@@ -250,7 +250,7 @@ bool resolve_object(const reader::Source& source,
                              {line.data(), static_cast<std::size_t>(written)});
         }
     }
-    if (!fill_slots(storage, declared.count, candidate)) {
+    if (!fill_slots(storage, storage.object, declared, declared.count, candidate)) {
         // The client registers a record per slot the object declares and refuses its whole apply
         // while any record in the current bubble is unseeded, so a group missing one descriptor is
         // dropped rather than published short.

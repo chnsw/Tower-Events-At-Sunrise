@@ -183,6 +183,8 @@ void record_slot(RosterStorage& storage,
  * @return True when every declared slot has a descriptor and nothing overflowed.
  */
 [[nodiscard]] bool fill_slots(RosterStorage& storage,
+                              std::span<const std::byte> objectBlob,
+                              const middleware::content::packages::tables::Array& declaredSlots,
                               std::size_t declaredSlotCount,
                               layouts::RosterGroup& group) noexcept;
 
