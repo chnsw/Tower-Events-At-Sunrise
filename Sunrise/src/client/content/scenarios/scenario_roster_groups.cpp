@@ -189,6 +189,22 @@ bool resolve_object(const reader::Source& source,
     storage.slotCount = 0;
     storage.slotsOverflowed = false;
     collect_descriptors(source, scratch, storage, storage.object, candidate.registryKey);
+    // Why an event group is dropped: fill_slots demands slotCount == declaredSlotCount exactly,
+    // and record_slot silently skips a descriptor whose type is 0 or above kMaximumSlotType, or
+    // whose index repeats. Report the two counts for the event objects so a resolution failure can
+    // be told from a classification one.
+    if (tables::is_event_roster_key(candidate.registryKey)) {
+        std::array<char, core::log::kLineCapacity> line{};
+        const int written = std::snprintf(
+            line.data(), line.size(),
+            "ev=event_fill tag=0x%08X key=0x%08X declared=%u collected=%zu overflow=%u",
+            objectTag, candidate.registryKey, static_cast<unsigned>(declared.count),
+            storage.slotCount, storage.slotsOverflowed ? 1U : 0U);
+        if (written > 0) {
+            core::log::write(core::log::Channel::state, core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
+    }
     if (!fill_slots(storage, declared.count, candidate)) {
         // The client registers a record per slot the object declares and refuses its whole apply
         // while any record in the current bubble is unseeded, so a group missing one descriptor is
