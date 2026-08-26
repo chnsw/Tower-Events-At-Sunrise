@@ -302,6 +302,28 @@ void place_event_props() noexcept {
     }
     // Only the area the player is actually in.
     const std::size_t index = occupied_area();
+    // Report where the player is and which area that resolves to, a handful of times. Without this
+    // a gate that never opens is completely silent, which cost a whole walk-through to discover.
+    {
+        static std::atomic_uint32_t told{0};
+        if (told.fetch_add(1, std::memory_order_relaxed) < 12) {
+            void* const component = hooks::teleport::local_player_component();
+            hooks::teleport::Vector at{};
+            const bool read = component != nullptr
+                              && hooks::teleport::read_position(component, at);
+            std::array<char, core::log::kLineCapacity> line{};
+            const int written = std::snprintf(
+                line.data(), line.size(),
+                "ev=event_area component=%d read=%d at=%.1f,%.1f,%.1f area=%zu",
+                component != nullptr ? 1 : 0, read ? 1 : 0,
+                static_cast<double>(at[0]), static_cast<double>(at[1]),
+                static_cast<double>(at[2]), index);
+            if (written > 0) {
+                core::log::write(core::log::Channel::client, core::log::Level::warn,
+                                 {line.data(), static_cast<std::size_t>(written)});
+            }
+        }
+    }
     if (index < kAreaOffsets.size() && !g_areaPlaced[index].load(std::memory_order_acquire)) {
         const AreaOffset& area = kAreaOffsets[index];
         std::size_t placed = 0;
