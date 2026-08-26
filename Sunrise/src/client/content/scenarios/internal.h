@@ -57,6 +57,16 @@ struct RosterStorage {
     /** Descriptors found on the object being resolved, one per slot it can publish. */
     std::array<SlotRecord, layouts::kRosterSlotCapacity> slots{};
     std::size_t slotCount{};
+    /**
+     * Slot flags learned per slot TYPE, across every object the walk has read.
+     * A flag byte is a property of the type, not of one placed instance: the pre-merge build kept
+     * exactly this table and tested it in `carries_wire_slot`. It matters for a slot whose own
+     * descriptor cannot be reached - every Tower event has one - because publishing that slot with
+     * zero flags makes it unseedable, and the client then holds the whole bubble at
+     * `activity:initial_slice_set_loading` step 36 waiting for a record that never arrives.
+     */
+    std::array<std::uint8_t, 256> typeFlags{};
+    std::array<bool, 256> typeFlagsKnown{};
     /** Set when the object declared more descriptors than storage holds, which refuses it. */
     bool slotsOverflowed{};
     /** Group objects whose descriptor walk yielded no publishable slot. */

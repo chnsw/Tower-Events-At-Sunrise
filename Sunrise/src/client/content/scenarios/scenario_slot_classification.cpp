@@ -31,10 +31,14 @@ void record_slot(RosterStorage& storage, const tables::SlotDescriptor& descripto
         storage.slotsOverflowed = true;
         return;
     }
+    const std::uint8_t flags = slot_flags(descriptor.authSchema, descriptor.senseSchema);
     storage.slots[storage.slotCount] = {descriptor.slotIndex,
-                                        static_cast<std::uint8_t>(descriptor.slotType),
-                                        slot_flags(descriptor.authSchema, descriptor.senseSchema)};
+                                        static_cast<std::uint8_t>(descriptor.slotType), flags};
     ++storage.slotCount;
+    // Remember what this type looks like, so a slot elsewhere whose descriptor cannot be reached
+    // can still be published with the right flags rather than with none.
+    storage.typeFlags[descriptor.slotType] |= flags;
+    storage.typeFlagsKnown[descriptor.slotType] = true;
 }
 
 /**
@@ -65,7 +69,8 @@ bool fill_slots(RosterStorage& storage,
             return false;
         }
         group.slotTypes[ordinal] = static_cast<std::uint8_t>(declared.type);
-        group.slotFlags[ordinal] = 0;
+        group.slotFlags[ordinal] =
+            storage.typeFlagsKnown[declared.type] ? storage.typeFlags[declared.type] : 0;
         group.slotIndices[ordinal] = static_cast<std::uint16_t>(ordinal);
     }
     for (std::size_t slot = 0; slot < storage.slotCount; ++slot) {
