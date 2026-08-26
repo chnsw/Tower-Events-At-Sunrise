@@ -68,11 +68,19 @@ void follow_handle(const reader::Source& source,
         if (!tables::next_descriptor_tag(storage.chain, classId, next)) {
             if (tables::is_event_roster_key(registryKey)) {
                 std::array<char, core::log::kLineCapacity> line{};
+                // 0x80809468 is kSlotIndirectClass and IS handled, so the failure is inside:
+                // the handle array is missing or empty. Report what the blob actually carries.
+                tables::Array indirect{};
+                const bool found = tables::find_array_at(
+                    storage.chain, tables::kSlotIndirectDescriptor, indirect);
                 const int written = std::snprintf(
                     line.data(), line.size(),
                     "ev=event_chain key=0x%08X handle=0x%08X tag=0x%08X class=0x%08X depth=%zu "
-                    "result=no_next",
-                    registryKey, handle, tag, classId, depth);
+                    "result=no_next bytes=%zu array=%u count=%llu off=%llu",
+                    registryKey, handle, tag, classId, depth, storage.chain.size(),
+                    found ? 1U : 0U,
+                    static_cast<unsigned long long>(indirect.count),
+                    static_cast<unsigned long long>(indirect.dataOffset));
                 if (written > 0) {
                     core::log::write(core::log::Channel::state, core::log::Level::warn,
                                      {line.data(), static_cast<std::size_t>(written)});
