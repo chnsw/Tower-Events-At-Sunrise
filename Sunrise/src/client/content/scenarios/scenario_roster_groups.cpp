@@ -44,6 +44,19 @@ void follow_handle(const reader::Source& source,
         std::uint32_t classId = 0;
         ++storage.reads;
         if (!reader::read_tag(source, scratch, tag, storage.chain, classId)) {
+            // Every Tower event group is short by exactly its last slot. Name the handle whose
+            // chain cannot be read, so an absent package can be told from a malformed chain.
+            if (tables::is_event_roster_key(registryKey)) {
+                std::array<char, core::log::kLineCapacity> line{};
+                const int written = std::snprintf(
+                    line.data(), line.size(),
+                    "ev=event_chain key=0x%08X handle=0x%08X tag=0x%08X depth=%zu result=unreadable",
+                    registryKey, handle, tag, depth);
+                if (written > 0) {
+                    core::log::write(core::log::Channel::state, core::log::Level::warn,
+                                     {line.data(), static_cast<std::size_t>(written)});
+                }
+            }
             return;
         }
         if (classId == tables::kPlacedObjectClass) {
@@ -53,6 +66,18 @@ void follow_handle(const reader::Source& source,
         }
         std::uint32_t next = 0;
         if (!tables::next_descriptor_tag(storage.chain, classId, next)) {
+            if (tables::is_event_roster_key(registryKey)) {
+                std::array<char, core::log::kLineCapacity> line{};
+                const int written = std::snprintf(
+                    line.data(), line.size(),
+                    "ev=event_chain key=0x%08X handle=0x%08X tag=0x%08X class=0x%08X depth=%zu "
+                    "result=no_next",
+                    registryKey, handle, tag, classId, depth);
+                if (written > 0) {
+                    core::log::write(core::log::Channel::state, core::log::Level::warn,
+                                     {line.data(), static_cast<std::size_t>(written)});
+                }
+            }
             return;
         }
         tag = next;
