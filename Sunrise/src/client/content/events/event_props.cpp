@@ -29,6 +29,7 @@
 
 #include "../../../core/logging/log.h"
 #include "../../hooks/teleport/runtime.h"
+#include "../../player/player_position.h"
 #include "../../patterns/image_scan.h"
 
 namespace sunrise::client::content::events {
@@ -166,14 +167,14 @@ constexpr AreaAnchor kCourtyardAnchor{18.4F, 19.2F, 17.5F};
  * @return Its index, or the area count when the player is elsewhere - the Courtyard included.
  */
 [[nodiscard]] std::size_t occupied_area() noexcept {
-    void* const component = hooks::teleport::local_player_component();
-    if (component == nullptr) {
+    // The published snapshot, not a live component read: local_player_component() answers null
+    // outside the physics sync - measured 2026-08-27 as component=0 read=0 while the player was
+    // standing in the Bazaar. The frame poll keeps this current for exactly that reason.
+    const player::position::Snapshot player = player::position::snapshot();
+    if (!player.present) {
         return kAreaAnchors.size();
     }
-    hooks::teleport::Vector at{};
-    if (!hooks::teleport::read_position(component, at)) {
-        return kAreaAnchors.size();
-    }
+    const hooks::teleport::Vector at = player.position;
     const auto squared = [&at](const AreaAnchor& anchor) noexcept {
         const float dx = at[0] - anchor.x;
         const float dy = at[1] - anchor.y;
@@ -307,10 +308,10 @@ void place_event_props() noexcept {
     {
         static std::atomic_uint32_t told{0};
         if (told.fetch_add(1, std::memory_order_relaxed) < 12) {
-            void* const component = hooks::teleport::local_player_component();
-            hooks::teleport::Vector at{};
-            const bool read = component != nullptr
-                              && hooks::teleport::read_position(component, at);
+            const player::position::Snapshot snap = player::position::snapshot();
+            const hooks::teleport::Vector at = snap.position;
+            const bool read = snap.present;
+            void* const component = read ? reinterpret_cast<void*>(1) : nullptr;
             std::array<char, core::log::kLineCapacity> line{};
             const int written = std::snprintf(
                 line.data(), line.size(),
