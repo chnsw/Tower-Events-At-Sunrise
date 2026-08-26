@@ -135,8 +135,13 @@ bool resolve_object(const reader::Source& source,
 
     layouts::RosterGroup candidate{};
     tables::Array declared{};
+    // NOTE: this deliberately does NOT gate on carries_roster_slot. That gate was added by the
+    // upstream roster rewrite and it removes every Tower seasonal event from the roster path:
+    // measured 2026-08-26, the whole install yields only eight roster keys and not one of the six
+    // known event keys appears. carries_roster_slot belongs to the intersection analysis, which is
+    // where the working build called it and where it still is; using it as an admission gate here
+    // is what reduced the Tower from 36 groups to 1.
     if (!tables::object_key(storage.object, candidate.registryKey) || candidate.registryKey == 0
-        || !tables::carries_roster_slot(storage.object)
         || !tables::object_slots(storage.object, declared) || declared.count == 0
         || declared.count > layouts::kRosterSlotCapacity) {
         return true;
