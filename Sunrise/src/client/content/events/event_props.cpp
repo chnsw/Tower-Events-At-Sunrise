@@ -65,6 +65,8 @@ PlacementInitialize g_directInitialize = nullptr;
 ObjectInstantiate g_instantiate = nullptr;
 std::atomic_bool g_bound{false};
 std::atomic_bool g_placed{false};
+/** Where the first failed placement stopped, so a silent zero can be told apart from a fault. */
+const char* g_lastStep = "-";
 
 constexpr std::uint32_t kInvalidDatum = 0xFFFFFFFFU;
 /** Placement storage: a header the initializer reads, then the arena it builds the descriptor in. */
@@ -157,6 +159,7 @@ void reset_storage(PlacementStorage& storage) noexcept {
             initialized = g_directInitialize(storage.bytes.data(), tag) != 0;
         }
         if (!initialized) {
+            g_lastStep = "initialize";
             return kInvalidDatum;
         }
         void* const descriptor = descriptor_of(storage);
@@ -172,7 +175,11 @@ void reset_storage(PlacementStorage& storage) noexcept {
                     sizeof position);
         *(static_cast<std::uint8_t*>(descriptor) + kDescriptorFlags) = kAuthoredFlagByte;
         (void)g_instantiate(&handle, descriptor);
+        if (handle == kInvalidDatum) {
+            g_lastStep = "instantiate";
+        }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_lastStep = "fault";
         return kInvalidDatum;
     }
     return handle;
@@ -198,10 +205,15 @@ void report(const char* area, std::size_t placed, std::size_t attempted) noexcep
     std::array<char, core::log::kLineCapacity> line{};
     const int written = std::snprintf(line.data(),
                                       line.size(),
-                                      "ev=event_props area=%s placed=%zu of=%zu",
+                                      "ev=event_props area=%s placed=%zu of=%zu step=%s "
+                                      "init=%d direct=%d inst=%d",
                                       area,
                                       placed,
-                                      attempted);
+                                      attempted,
+                                      g_lastStep,
+                                      g_initialize != nullptr ? 1 : 0,
+                                      g_directInitialize != nullptr ? 1 : 0,
+                                      g_instantiate != nullptr ? 1 : 0);
     if (written > 0) {
         core::log::write(core::log::Channel::client,
                          placed != 0 ? core::log::Level::info : core::log::Level::warn,
