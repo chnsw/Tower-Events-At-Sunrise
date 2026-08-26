@@ -57,31 +57,35 @@ bool fill_slots(RosterStorage& storage,
                 const tables::Array& declaredSlots,
                 std::size_t declaredSlotCount,
                 layouts::RosterGroup& group) noexcept {
+    // The declared array is no longer read here, but stays in the signature: it is what a future
+    // fix would use if the unreachable descriptor is ever recovered.
+    (void)objectBlob;
+    (void)declaredSlots;
     if (storage.slotsOverflowed || declaredSlotCount == 0
         || declaredSlotCount > layouts::kRosterSlotCapacity) {
         return false;
     }
-    // Seed every declared ordinal from the object itself, then let a descriptor override it.
-    for (std::size_t ordinal = 0; ordinal < declaredSlotCount; ++ordinal) {
-        tables::Slot declared{};
-        if (!tables::object_slot_at(objectBlob, declaredSlots, ordinal, declared)
-            || declared.type == 0 || declared.type > layouts::kMaximumSlotType) {
-            return false;
-        }
-        group.slotTypes[ordinal] = static_cast<std::uint8_t>(declared.type);
-        group.slotFlags[ordinal] =
-            storage.typeFlagsKnown[declared.type] ? storage.typeFlags[declared.type] : 0;
-        group.slotIndices[ordinal] = static_cast<std::uint16_t>(ordinal);
+    // Publish ONLY the slots whose descriptor was actually reached.
+    //
+    // Padding out to the declared count was measured on 2026-08-27 and hangs the client at
+    // `activity:initial_slice_set_loading` step 36 forever, on two separate runs, whether the
+    // padded slot's flags are zero or inherited from its type. The host has no descriptor for
+    // that slot and so can never seed a record for it, and the client will not apply the bubble
+    // until every record it is told about is seeded. Naming fewer slots is the only remaining
+    // way to publish a group whose chain cannot be walked in full.
+    if (storage.slotCount == 0) {
+        return false;
     }
+    const auto last = storage.slots.begin() + static_cast<std::ptrdiff_t>(storage.slotCount);
+    std::sort(storage.slots.begin(), last, [](const SlotRecord& first, const SlotRecord& second) {
+        return first.index < second.index;
+    });
     for (std::size_t slot = 0; slot < storage.slotCount; ++slot) {
-        const std::uint16_t index = storage.slots[slot].index;
-        if (index >= declaredSlotCount) {
-            continue;
-        }
-        group.slotTypes[index] = storage.slots[slot].type;
-        group.slotFlags[index] = storage.slots[slot].flags;
+        group.slotTypes[slot] = storage.slots[slot].type;
+        group.slotFlags[slot] = storage.slots[slot].flags;
+        group.slotIndices[slot] = storage.slots[slot].index;
     }
-    group.slotCount = static_cast<std::uint16_t>(declaredSlotCount);
+    group.slotCount = static_cast<std::uint16_t>(storage.slotCount);
     return true;
 }
 
