@@ -7,6 +7,7 @@
 #include "../../../core/logging/log.h"
 #include "../../../state/activity/runtime.h"
 #include "bootflow_hook_lifecycle.h"
+#include "../../content/events/event_props.h"
 #include "internal.h"
 
 namespace sunrise::client::hooks::bootflow {
@@ -73,6 +74,9 @@ void observe_world_step() noexcept {
     state::activity::WorldPhase phase = state::activity::WorldPhase::idle;
     if (step == kInWorld) {
         phase = state::activity::WorldPhase::arrived;
+        // In world is the first point at which placing an object is meaningful, and the placement
+        // itself is one-shot, so calling it from here costs one predictable branch per step read.
+        content::events::place_event_props();
     } else if (step >= kActivityLoadFirst && step < kInWorld) {
         phase = state::activity::WorldPhase::transitioning;
     } else {
