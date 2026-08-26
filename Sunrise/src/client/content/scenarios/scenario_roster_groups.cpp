@@ -172,14 +172,49 @@ bool resolve_object(const reader::Source& source,
 
     layouts::RosterGroup candidate{};
     tables::Array declared{};
-    // Admission is decided AFTER the descriptors are collected, on whether any slot actually
-    // carries a wire schema. That is what the working build did (`carries_wire_slot` over the
-    // resolved flags). The roster rewrite replaced it with `carries_roster_slot`, a hardcoded list
-    // of nine declared types, which is a different and much narrower test: measured 2026-08-26 it
-    // admits eight groups across the whole install and rejects all seven Tower seasonal events,
-    // every one of which declares real slots but no listed type. Gating here instead would need
-    // the event keys hardcoded; gating on the flags needs nothing hardcoded and restores them.
+    // Does any placed object in this install actually carry a known Tower event registry key?
+    // The six keys were attributed on the pre-merge build; nothing since has observed one. Report
+    // every hit with what it declares, before any admission gate can hide it.
+    {
+        std::uint32_t probeKey = 0;
+        if (tables::object_key(storage.object, probeKey)) {
+            constexpr std::array<std::uint32_t, 7> kEventKeys{
+                0x7C6DE64FU, 0x27060E6CU, 0x6CEFCC01U, 0xD5B68262U,
+                0x00ACD208U, 0x4F4ED92FU, 0x50CC9C7DU};
+            for (const std::uint32_t key : kEventKeys) {
+                if (probeKey != key) {
+                    continue;
+                }
+                tables::Array probeSlots{};
+                const bool hasSlots = tables::object_slots(storage.object, probeSlots);
+                std::array<char, core::log::kLineCapacity> line{};
+                const int written = std::snprintf(
+                    line.data(), line.size(),
+                    "ev=event_key tag=0x%08X key=0x%08X slots=%u wire=%u",
+                    objectTag, probeKey,
+                    hasSlots ? static_cast<unsigned>(probeSlots.count) : 0U,
+                    tables::carries_roster_slot(storage.object) ? 1U : 0U);
+                if (written > 0) {
+                    core::log::write(core::log::Channel::state, core::log::Level::warn,
+                                     {line.data(), static_cast<std::size_t>(written)});
+                }
+                break;
+            }
+        }
+    }
+    // Admission. carries_roster_slot stays the general gate: removing it entirely was measured on
+    // 2026-08-26 and saturates kRosterGroupCapacity (groups=512) before the walk finishes, which
+    // aborts destinations wholesale, so the original comment's warning is correct.
+    //
+    // It is not sufficient on its own. Every Tower seasonal event is carried by one placed object
+    // with its own registry key, and all seven declare real slots (2 to 29) while declaring NO
+    // wire slot type - measured 2026-08-26, wire=0 on every one. So the wire-type gate rejects
+    // every event, which is why the Tower published one group instead of thirty-six and no
+    // per-bubble sub-block at all. Admitting them by key restores the events and costs seven
+    // groups, and makes each event independently selectable through the existing exclude file.
     if (!tables::object_key(storage.object, candidate.registryKey) || candidate.registryKey == 0
+        || !(tables::carries_roster_slot(storage.object)
+             || tables::is_event_roster_key(candidate.registryKey))
         || !tables::object_slots(storage.object, declared) || declared.count == 0
         || declared.count > layouts::kRosterSlotCapacity) {
         return true;
@@ -220,18 +255,6 @@ bool resolve_object(const reader::Source& source,
         // while any record in the current bubble is unseeded, so a group missing one descriptor is
         // dropped rather than published short.
         ++storage.unresolvedGroups;
-        return true;
-    }
-    // The wire test: a slot with a non-zero flag byte carries an auth or sense schema, which is
-    // what makes the group worth publishing. An object with no such slot is ordinary scenery.
-    bool carriesWire = false;
-    for (std::size_t wire = 0; wire < candidate.slotCount; ++wire) {
-        if (candidate.slotFlags[wire] != 0) {
-            carriesWire = true;
-            break;
-        }
-    }
-    if (!carriesWire) {
         return true;
     }
     candidate.objectTag = objectTag;
