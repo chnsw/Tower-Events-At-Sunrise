@@ -306,8 +306,12 @@ void place_event_props() noexcept {
     // Report where the player is and which area that resolves to, a handful of times. Without this
     // a gate that never opens is completely silent, which cost a whole walk-through to discover.
     {
-        static std::atomic_uint32_t told{0};
-        if (told.fetch_add(1, std::memory_order_relaxed) < 12) {
+        // Sample periodically, not the first N calls. Logging the first twelve spent the whole
+        // budget on the twelve frames after the hook installed, before the player existed, so every
+        // line read component=0 and looked like a failure that was really a mistimed probe.
+        static std::atomic_uint32_t ticks{0};
+        const std::uint32_t tick = ticks.fetch_add(1, std::memory_order_relaxed);
+        if (tick % 600 == 0 && tick < 12000) {
             const player::position::Snapshot snap = player::position::snapshot();
             const hooks::teleport::Vector at = snap.position;
             const bool read = snap.present;
