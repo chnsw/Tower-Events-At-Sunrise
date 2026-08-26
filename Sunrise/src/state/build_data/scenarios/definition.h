@@ -29,7 +29,7 @@ inline constexpr std::uint8_t kBubbleDisabledByte = 0x7F;
  * Roster group objects the installed packages declare. The live count is 68.
  * A group object is one whose slot list declares a type activity message 5 publishes.
  */
-inline constexpr std::size_t kRosterGroupCapacity = 512;
+inline constexpr std::size_t kRosterGroupCapacity = 2048;
 /** Slots on one roster group object. The widest installed group declares 1218. */
 inline constexpr std::size_t kRosterSlotCapacity = 1280;
 /** Roster groups one destination publishes. No installed destination reaches more than two. */

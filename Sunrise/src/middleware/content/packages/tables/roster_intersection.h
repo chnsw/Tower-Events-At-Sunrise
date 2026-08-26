@@ -20,7 +20,7 @@ inline constexpr std::size_t kSliceSetCapacity = 64;
  * No installed destination reaches more than 2 objects carrying a wire slot type. This leaves
  * room to spare without a heap allocation.
  */
-inline constexpr std::size_t kRosterKeyCapacity = 16;
+inline constexpr std::size_t kRosterKeyCapacity = 64;
 
 static_assert(kSliceSetCapacity * kSliceSetIndexFactor == 512);
 // One bit per slice set, so the mask must cover the whole capacity.
@@ -56,20 +56,17 @@ void observe_unresolved_slice_set(RosterIntersection& state) noexcept;
  * Only 56 installed objects declare any of them, and the key limit above holds only for that
  * filtered set. Feeding every placed object instead overflows most destinations.
  */
-inline constexpr std::array<std::uint16_t, 16> kRosterSlotTypes = {
+inline constexpr std::array<std::uint16_t, 11> kRosterSlotTypes = {
     // The original nine.
     8, 13, 16, 17, 21, 35, 37, 41, 67,
-    // The schema-bearing types the schema catalogue documents, which this list was missing
-    // entirely - the two sets were completely disjoint. Every Tower seasonal event declares
-    // types from this half (the Dawning declares 4, 1, 23, 70, 42, 61) and none from the half
-    // above, which is why the wire-type gate rejected all seven. Types 1 and 4 are deliberately
-    // NOT added: 4 is the generic visual slot and admitting it saturates the group table.
+    // Two of the schema-bearing types the schema catalogue documents, which this list omitted -
+    // the two sets were otherwise completely disjoint. Every Tower seasonal event declares one of
+    // these and none of the nine above, which is why the wire-type gate rejected all seven (the
+    // Dawning declares 4, 1, 23, 70, 42, 61). Only 23 and 70 are added: measured 2026-08-26,
+    // adding 26/30/31/34/43 as well saturates kRosterGroupCapacity because 30 (monitors and
+    // volumes), 31 (points) and 34 (helpers) are ordinary scenery, and 1 and 4 are the generic
+    // state and visual slots.
     23,    // 0x80804F48, the controller/gate slot
-    26,    // 0x8080954B
-    30,    // 0x80809532
-    31,    // 0x80809524
-    34,    // 0x8080956A
-    43,    // 0x8080626B
     70};   // 0x808094F1
 
 /**
