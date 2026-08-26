@@ -24,9 +24,16 @@ inline constexpr std::size_t kObjectMemoCapacity = 16'384;
 /** Memo value for an object that declares no roster slot type. */
 inline constexpr std::uint16_t kNotARosterGroup = 0xFFFF;
 
-/** One memo row: a placed-object tag and the roster group it produced. */
+/**
+ * One memo row: a placed-object tag, the roster group it produced, and the registry key it carries.
+ * The key is kept even when the object is not a group of its own. A seasonal event is carried by
+ * one group object but its props are ordinary placed objects sharing that key, and the per-bubble
+ * mask has to cover every bubble holding either - a bubble with the props but not the group object
+ * would otherwise never have the key advertised, so those props are never seeded.
+ */
 struct ObjectMemo {
     std::uint32_t tag{};
+    std::uint32_t registryKey{};
     std::uint16_t group{kNotARosterGroup};
 };
 
@@ -244,6 +251,15 @@ void publish_groups(Walk& walk, layouts::Definition& row) noexcept;
  * @param group Receives the roster group index, or the not-a-group sentinel.
  * @return True when the object was read or was already known.
  */
+/**
+ * Reports the registry key a placed object carries, from the memo the walk already filled.
+ * @param storage Working storage.
+ * @param objectTag Object tag.
+ * @return The key, or zero when the object is unknown or carries none.
+ */
+[[nodiscard]] std::uint32_t memoised_object_key(const RosterStorage& storage,
+                                                std::uint32_t objectTag) noexcept;
+
 [[nodiscard]] bool resolve_object(const reader::Source& source,
                                   reader::Scratch& scratch,
                                   RosterStorage& storage,

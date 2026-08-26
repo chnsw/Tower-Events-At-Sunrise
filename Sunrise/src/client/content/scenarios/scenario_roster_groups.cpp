@@ -149,6 +149,15 @@ void collect_descriptors(const reader::Source& source,
  * @param group Receives the roster group index, or the not-a-group sentinel.
  * @return True when the object was read or was already known.
  */
+std::uint32_t memoised_object_key(const RosterStorage& storage,
+                                  std::uint32_t objectTag) noexcept {
+    const std::size_t slot = memo_slot(storage, objectTag);
+    if (slot == kObjectMemoCapacity || storage.memo[slot].tag != objectTag) {
+        return 0;
+    }
+    return storage.memo[slot].registryKey;
+}
+
 bool resolve_object(const reader::Source& source,
                     reader::Scratch& scratch,
                     RosterStorage& storage,
@@ -165,6 +174,7 @@ bool resolve_object(const reader::Source& source,
     }
     storage.memo[slot].tag = objectTag;
     storage.memo[slot].group = kNotARosterGroup;
+    storage.memo[slot].registryKey = 0;
     ++storage.reads;
     if (!reader::read_tag(source, scratch, objectTag, storage.object)) {
         return true;
@@ -212,7 +222,10 @@ bool resolve_object(const reader::Source& source,
     // every event, which is why the Tower published one group instead of thirty-six and no
     // per-bubble sub-block at all. Admitting them by key restores the events and costs seven
     // groups, and makes each event independently selectable through the existing exclude file.
-    if (!tables::object_key(storage.object, candidate.registryKey) || candidate.registryKey == 0
+    if (tables::object_key(storage.object, candidate.registryKey)) {
+        storage.memo[slot].registryKey = candidate.registryKey;
+    }
+    if (candidate.registryKey == 0
         || !(tables::carries_roster_slot(storage.object)
              || tables::is_event_roster_key(candidate.registryKey))
         || !tables::object_slots(storage.object, declared) || declared.count == 0

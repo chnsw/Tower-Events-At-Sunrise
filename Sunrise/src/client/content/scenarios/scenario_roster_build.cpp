@@ -111,6 +111,14 @@ void note_candidate(Walk& walk,
                 return false;
             }
             if (group == kNotARosterGroup) {
+                // Not a group of its own, but it may still carry a group's key - an event's props
+                // do exactly that. The key has to be observed here or this bubble is left out of
+                // the mask and the props are never advertised for it.
+                const std::uint32_t carried = memoised_object_key(storage, objectTag);
+                if (carried != 0
+                    && !tables::observe_roster_key(walk.intersection, sliceSetIndex, carried)) {
+                    return true;
+                }
                 continue;
             }
             note_candidate(walk, storage, group, descriptor == 0);
