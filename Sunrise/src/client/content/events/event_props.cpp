@@ -80,6 +80,8 @@ std::atomic_bool g_bound{false};
  * same rule the vendor spawner applies through its own bubble check.
  */
 std::array<std::atomic_bool, 3> g_areaPlaced{};
+/** One refusal line per area, so repeated polls do not flood the log. */
+std::array<std::atomic_bool, 3> g_areaReported{};
 /** Where the first failed placement stopped, so a silent zero can be told apart from a fault. */
 const char* g_lastStep = "-";
 
@@ -260,8 +262,21 @@ void place_event_props() noexcept {
             }
         }
         // Nothing placed means the player is not in this area yet, so leave it for a later poll
-        // rather than burning the one attempt this area gets.
+        // rather than burning the one attempt this area gets. Report the first refusal per area,
+        // once, so a walk-through that shows nothing still says WHY - silence here was costing a
+        // whole test cycle to learn nothing.
         if (placed == 0) {
+            if (!g_areaReported[index].exchange(true, std::memory_order_acq_rel)) {
+                std::array<char, core::log::kLineCapacity> line{};
+                const int written = std::snprintf(
+                    line.data(), line.size(),
+                    "ev=event_props area=%s placed=0 of=%zu step=%s deferred=1",
+                    area.name, kDawningCourtyard.size(), g_lastStep);
+                if (written > 0) {
+                    core::log::write(core::log::Channel::client, core::log::Level::warn,
+                                     {line.data(), static_cast<std::size_t>(written)});
+                }
+            }
             continue;
         }
         g_areaPlaced[index].store(true, std::memory_order_release);
