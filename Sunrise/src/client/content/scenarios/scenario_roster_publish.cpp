@@ -148,8 +148,33 @@ void report_publish(const Walk& walk, const layouts::Definition& row,
     }
 }
 
+/**
+ * Widens every seasonal event key to every slice set this destination reaches.
+ *
+ * An event's group object lives in exactly one bubble's registry - measured 2026-08-27, six of the
+ * Tower's seven sit in bubble 6 (the Courtyard) and the bazaar urns in bubble 0 - so the observed
+ * mask advertises each event for that one bubble only, and the event renders there and nowhere
+ * else. Widening the mask to the whole observed set advertises the key in every bubble, which is
+ * what lets an event appear throughout the Tower rather than in the room its group object happens
+ * to be registered in.
+ *
+ * This deliberately overrides the intersection's own safety rule, which is that a key absent from a
+ * slice set crashes the client on the switch out of it. That rule is why the mask is normally
+ * narrow. It is overridden only for the seven known event keys, never for anything else.
+ */
+void widen_event_keys(Walk& walk) noexcept {
+    for (std::size_t index = 0; index < walk.intersection.keyCount; ++index) {
+        if (walk.intersection.masks[index] == 0
+            || !tables::is_event_roster_key(walk.intersection.keys[index])) {
+            continue;
+        }
+        walk.intersection.masks[index] = walk.intersection.observedSets;
+    }
+}
+
 /** Splits the candidates between the destination row's two lists. */
 void publish_groups(Walk& walk, layouts::Definition& row) noexcept {
+    widen_event_keys(walk);
     row.rosterGroupCount = 0;
     row.rosterGroups = {};
     row.bubbleGroupCount = 0;
