@@ -121,7 +121,14 @@ void report_publish(const Walk& walk, const layouts::Definition& row,
                            safeCount, static_cast<unsigned>(row.rosterGroupCount),
                            partialCount, static_cast<unsigned>(row.bubbleGroupCount),
                            truncated ? " TRUNCATED" : "");
-    for (std::size_t index = 0; index < row.bubbleGroupCount && at > 0; ++index) {
+    // `at` holds snprintf's would-be length, which passes the capacity once the line fills. The
+    // append below must stop there: continuing computes `line.size() - at` as a wrapped size and
+    // points snprintf past the buffer, which is an out-of-bounds write. At 16 keys no line ever
+    // filled; the first 53-key Tower row crossed the capacity and took the process down mid-walk.
+    const auto fits = [&line](int offset) {
+        return offset > 0 && static_cast<std::size_t>(offset) < line.size();
+    };
+    for (std::size_t index = 0; index < row.bubbleGroupCount && fits(at); ++index) {
         at += std::snprintf(line.data() + at, line.size() - static_cast<std::size_t>(at),
                             " m%zu=0x%llX", index,
                             static_cast<unsigned long long>(row.bubbleGroupMasks[index]));
@@ -129,12 +136,12 @@ void report_publish(const Walk& walk, const layouts::Definition& row,
     // The raw intersection. A key is dropped as neither safe nor partial when its mask is zero,
     // meaning it was never observed in ANY slice set of this destination - which is a different
     // failure from being observed in only some. Print every key so the two can be told apart.
-    if (at > 0) {
+    if (fits(at)) {
         at += std::snprintf(line.data() + at, line.size() - static_cast<std::size_t>(at),
                             " obs=0x%llX keys=%zu",
                             static_cast<unsigned long long>(walk.intersection.observedSets),
                             walk.intersection.keyCount);
-        for (std::size_t index = 0; index < walk.intersection.keyCount && at > 0; ++index) {
+        for (std::size_t index = 0; index < walk.intersection.keyCount && fits(at); ++index) {
             at += std::snprintf(line.data() + at, line.size() - static_cast<std::size_t>(at),
                                 " k%zu=0x%X/0x%llX", index,
                                 walk.intersection.keys[index],
@@ -142,9 +149,11 @@ void report_publish(const Walk& walk, const layouts::Definition& row,
         }
     }
     if (at > 0) {
+        const std::size_t length =
+            std::min(static_cast<std::size_t>(at), line.size() - 1);
         core::log::write(core::log::Channel::state,
                          truncated ? core::log::Level::warn : core::log::Level::debug,
-                         {line.data(), static_cast<std::size_t>(at)});
+                         {line.data(), length});
     }
 }
 
