@@ -195,11 +195,23 @@ bool resolve_object(const reader::Source& source,
     // be told from a classification one.
     if (tables::is_event_roster_key(candidate.registryKey)) {
         std::array<char, core::log::kLineCapacity> line{};
-        const int written = std::snprintf(
+        int written = std::snprintf(
             line.data(), line.size(),
             "ev=event_fill tag=0x%08X key=0x%08X declared=%u collected=%zu overflow=%u",
             objectTag, candidate.registryKey, static_cast<unsigned>(declared.count),
             storage.slotCount, storage.slotsOverflowed ? 1U : 0U);
+        // Which slot indices were actually recorded. Every event group is short by exactly one,
+        // so the gap in this list names the descriptor record_slot refused.
+        for (std::size_t entry = 0; entry < storage.slotCount && written > 0; ++entry) {
+            const int more = std::snprintf(
+                line.data() + written, line.size() - static_cast<std::size_t>(written),
+                " %u/%u", static_cast<unsigned>(storage.slots[entry].index),
+                static_cast<unsigned>(storage.slots[entry].type));
+            if (more <= 0) {
+                break;
+            }
+            written += more;
+        }
         if (written > 0) {
             core::log::write(core::log::Channel::state, core::log::Level::warn,
                              {line.data(), static_cast<std::size_t>(written)});
