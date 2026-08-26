@@ -213,7 +213,8 @@ bool resolve_object(const reader::Source& source,
     // per-bubble sub-block at all. Admitting them by key restores the events and costs seven
     // groups, and makes each event independently selectable through the existing exclude file.
     if (!tables::object_key(storage.object, candidate.registryKey) || candidate.registryKey == 0
-        || !tables::carries_roster_slot(storage.object)
+        || !(tables::carries_roster_slot(storage.object)
+             || tables::is_event_roster_key(candidate.registryKey))
         || !tables::object_slots(storage.object, declared) || declared.count == 0
         || declared.count > layouts::kRosterSlotCapacity) {
         return true;
