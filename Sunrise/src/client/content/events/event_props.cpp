@@ -50,10 +50,18 @@ constexpr std::string_view kObjectInstantiateText =
 constexpr auto kObjectInstantiate =
     signature<signature_length(kObjectInstantiateText)>(kObjectInstantiateText);
 
+/** The fallback initialiser, for a tag the primary one refuses. */
+constexpr std::string_view kDirectInitializeText =
+    "48 89 5C 24 08 57 48 83 EC 20 8B DA 48 8B F9 83 FA FF 74 33 8B CA E8 ? ? ? ? "
+    "48 C7 47 30 00 00 00 00 48 8B CF 48 C7 47 10 00 00 00 00";
+constexpr auto kDirectInitialize =
+    signature<signature_length(kDirectInitializeText)>(kDirectInitializeText);
+
 using PlacementInitialize = std::uint8_t(__fastcall*)(void*, std::uint32_t) noexcept;
 using ObjectInstantiate = std::uint32_t*(__fastcall*)(std::uint32_t*, void*) noexcept;
 
 PlacementInitialize g_initialize = nullptr;
+PlacementInitialize g_directInitialize = nullptr;
 ObjectInstantiate g_instantiate = nullptr;
 std::atomic_bool g_bound{false};
 std::atomic_bool g_placed{false};
@@ -114,6 +122,24 @@ constexpr std::array<AreaOffset, 3> kAreaOffsets{{
     {129.7F, 59.3F, -10.1F, "Hangar"},
     {-153.4F, 20.8F, -42.5F, "Annex"}}};
 
+/**
+ * Seeds the header the initialiser reads before it will build anything.
+ * A zeroed header declares a zero-capacity arena and the initialiser refuses every tag - measured
+ * 2026-08-27 as placed=0 of=14 in all three areas, with no other symptom.
+ */
+void reset_storage(PlacementStorage& storage) noexcept {
+    storage = {};
+    constexpr std::uint64_t zero = 0;
+    constexpr std::uint64_t capacity = kPlacementPayloadBytes;
+    constexpr std::uint64_t alignment = 0x10;
+    std::memcpy(storage.bytes.data() + 0x00, &zero, sizeof zero);
+    std::memcpy(storage.bytes.data() + 0x10, &zero, sizeof zero);
+    std::memcpy(storage.bytes.data() + 0x18, &kInvalidDatum, sizeof kInvalidDatum);
+    std::memcpy(storage.bytes.data() + 0x20, &capacity, sizeof capacity);
+    std::memcpy(storage.bytes.data() + 0x28, &alignment, sizeof alignment);
+    std::memcpy(storage.bytes.data() + 0x30, &zero, sizeof zero);
+}
+
 /** @return The descriptor the initializer built inside the storage arena. */
 [[nodiscard]] void* descriptor_of(PlacementStorage& storage) noexcept {
     return storage.bytes.data() + kPlacementHeaderBytes;
@@ -124,7 +150,13 @@ constexpr std::array<AreaOffset, 3> kAreaOffsets{{
     std::uint32_t handle = kInvalidDatum;
     __try {
         PlacementStorage storage{};
-        if (g_initialize(storage.bytes.data(), tag) == 0) {
+        reset_storage(storage);
+        bool initialized = g_initialize(storage.bytes.data(), tag) != 0;
+        if (!initialized && g_directInitialize != nullptr) {
+            reset_storage(storage);
+            initialized = g_directInitialize(storage.bytes.data(), tag) != 0;
+        }
+        if (!initialized) {
             return kInvalidDatum;
         }
         void* const descriptor = descriptor_of(storage);
@@ -153,6 +185,8 @@ constexpr std::array<AreaOffset, 3> kAreaOffsets{{
     }
     std::byte* const initialize = scan_main_image_unique(kPlacementInitialize, "event_placement");
     std::byte* const instantiate = scan_main_image_unique(kObjectInstantiate, "event_instantiate");
+    std::byte* const direct = scan_main_image_unique(kDirectInitialize, "event_direct");
+    g_directInitialize = reinterpret_cast<PlacementInitialize>(direct);
     g_initialize = reinterpret_cast<PlacementInitialize>(initialize);
     g_instantiate = reinterpret_cast<ObjectInstantiate>(instantiate);
     g_bound.store(true, std::memory_order_release);
