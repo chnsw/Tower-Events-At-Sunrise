@@ -29,9 +29,16 @@ inline constexpr std::uint8_t kBubbleDisabledByte = 0x7F;
  * Roster group objects the installed packages declare. The live count is 68.
  * A group object is one whose slot list declares a type activity message 5 publishes.
  */
-inline constexpr std::size_t kRosterGroupCapacity = 512;
+inline constexpr std::size_t kRosterGroupCapacity = 4096;
 /** Slots on one roster group object. The widest installed group declares 1218. */
-inline constexpr std::size_t kRosterSlotCapacity = 1280;
+/**
+ * Slots one roster group may declare.
+ * 1280 made RosterGroup about 5 KB, which caps the group table at a few hundred entries before it
+ * saturates - and the pre-merge build published 36 groups for the Tower alone against the 9 this
+ * lineage manages. Real groups are small: the seven Tower events declare between 2 and 29 slots.
+ * Trading the oversized per-group array for a far larger table is what lets every group through.
+ */
+inline constexpr std::size_t kRosterSlotCapacity = 256;
 /** Roster groups one destination publishes. No installed destination reaches more than two. */
 inline constexpr std::size_t kDestinationGroupCapacity = 48;
 /**
