@@ -23,6 +23,15 @@ inline constexpr std::uint32_t kSlotIndirectClass = 0x80809468U;
 inline constexpr std::uint32_t kSlotRedirectClass = 0x80809B14U;
 /** The indirect blob holds its handle array descriptor at this offset. */
 inline constexpr std::size_t kSlotIndirectDescriptor = 16;
+/**
+ * Where the short form of an indirect descriptor keeps its one tag.
+ * A `kSlotIndirectClass` blob comes in two shapes. The long one carries a handle array at
+ * `kSlotIndirectDescriptor`. The short one is exactly 32 bytes, leaves that array zeroed, and names
+ * its single next tag here at +8. Every Tower seasonal event ends its descriptor chain in the short
+ * form, so a reader that only knows the long one loses exactly the last slot of every event object
+ * - measured 2026-08-26 on all seven, each collecting declared-1 slots.
+ */
+inline constexpr std::size_t kSlotIndirectDirectTag = 8;
 /** The redirect blob names its next tag at this offset. */
 inline constexpr std::size_t kSlotRedirectTagOffset = 12;
 

@@ -100,8 +100,14 @@ bool next_descriptor_tag(std::span<const std::byte> blob,
         return false;
     }
     Array handles{};
-    return find_array_at(blob, kSlotIndirectDescriptor, handles) && handles.count != 0
-           && read(blob, handles.dataOffset, tag);
+    if (find_array_at(blob, kSlotIndirectDescriptor, handles) && handles.count != 0
+        && read(blob, handles.dataOffset, tag)) {
+        return true;
+    }
+    // The short form: no handle array, one tag at +8. Falling through to it rather than failing is
+    // what lets an event object's last slot resolve; without it the group is short by one and
+    // fill_slots refuses the whole group, so the event never reaches the roster at all.
+    return read(blob, kSlotIndirectDirectTag, tag) && tag != 0;
 }
 
 } // namespace sunrise::middleware::content::packages::tables
