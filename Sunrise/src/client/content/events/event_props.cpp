@@ -44,6 +44,13 @@ constexpr std::string_view kPlacementInitializeText =
 constexpr auto kPlacementInitialize =
     signature<signature_length(kPlacementInitializeText)>(kPlacementInitializeText);
 
+/** The bare factory, for when the full instantiation path refuses. */
+constexpr std::string_view kObjectFactoryText =
+    "40 53 48 83 EC 20 41 83 C9 FF 41 83 C8 FF 48 8B D9 E8 ? ? ? ? 48 8B C3 "
+    "48 83 C4 20 5B C3";
+constexpr auto kObjectFactory =
+    signature<signature_length(kObjectFactoryText)>(kObjectFactoryText);
+
 /** The full instantiation path: registers the object and applies its transform. */
 constexpr std::string_view kObjectInstantiateText =
     "48 89 5C 24 20 55 56 57 41 56 41 57 48 8D 6C 24 C9 48 81 EC A0 00 00 00";
@@ -63,8 +70,16 @@ using ObjectInstantiate = std::uint32_t*(__fastcall*)(std::uint32_t*, void*) noe
 PlacementInitialize g_initialize = nullptr;
 PlacementInitialize g_directInitialize = nullptr;
 ObjectInstantiate g_instantiate = nullptr;
+ObjectInstantiate g_factory = nullptr;
 std::atomic_bool g_bound{false};
-std::atomic_bool g_placed{false};
+/**
+ * Which areas are done.
+ * The client instantiates into the slice set it currently holds, so a Bazaar coordinate refuses
+ * while the player is in the Courtyard - measured 2026-08-27 as step=instantiate with every entry
+ * point resolved. Each area is therefore retried until the player is standing in it, which is the
+ * same rule the vendor spawner applies through its own bubble check.
+ */
+std::array<std::atomic_bool, 3> g_areaPlaced{};
 /** Where the first failed placement stopped, so a silent zero can be told apart from a fault. */
 const char* g_lastStep = "-";
 
@@ -175,6 +190,9 @@ void reset_storage(PlacementStorage& storage) noexcept {
                     sizeof position);
         *(static_cast<std::uint8_t*>(descriptor) + kDescriptorFlags) = kAuthoredFlagByte;
         (void)g_instantiate(&handle, descriptor);
+        if (handle == kInvalidDatum && g_factory != nullptr) {
+            (void)g_factory(&handle, descriptor);
+        }
         if (handle == kInvalidDatum) {
             g_lastStep = "instantiate";
         }
@@ -193,6 +211,8 @@ void reset_storage(PlacementStorage& storage) noexcept {
     std::byte* const initialize = scan_main_image_unique(kPlacementInitialize, "event_placement");
     std::byte* const instantiate = scan_main_image_unique(kObjectInstantiate, "event_instantiate");
     std::byte* const direct = scan_main_image_unique(kDirectInitialize, "event_direct");
+    std::byte* const factory = scan_main_image_unique(kObjectFactory, "event_factory");
+    g_factory = reinterpret_cast<ObjectInstantiate>(factory);
     g_directInitialize = reinterpret_cast<PlacementInitialize>(direct);
     g_initialize = reinterpret_cast<PlacementInitialize>(initialize);
     g_instantiate = reinterpret_cast<ObjectInstantiate>(instantiate);
@@ -224,11 +244,14 @@ void report(const char* area, std::size_t placed, std::size_t attempted) noexcep
 } // namespace
 
 void place_event_props() noexcept {
-    if (g_placed.load(std::memory_order_acquire) || !bind()) {
+    if (!bind()) {
         return;
     }
-    g_placed.store(true, std::memory_order_release);
-    for (const AreaOffset& area : kAreaOffsets) {
+    for (std::size_t index = 0; index < kAreaOffsets.size(); ++index) {
+        if (g_areaPlaced[index].load(std::memory_order_acquire)) {
+            continue;
+        }
+        const AreaOffset& area = kAreaOffsets[index];
         std::size_t placed = 0;
         for (const Placement& source : kDawningCourtyard) {
             const Placement at{source.x + area.dx, source.y + area.dy, source.z + area.dz};
@@ -236,6 +259,12 @@ void place_event_props() noexcept {
                 ++placed;
             }
         }
+        // Nothing placed means the player is not in this area yet, so leave it for a later poll
+        // rather than burning the one attempt this area gets.
+        if (placed == 0) {
+            continue;
+        }
+        g_areaPlaced[index].store(true, std::memory_order_release);
         report(area.name, placed, kDawningCourtyard.size());
     }
 }
