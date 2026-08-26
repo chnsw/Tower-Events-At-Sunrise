@@ -1,6 +1,10 @@
 #include "../../../middleware/content/packages/tables/roster_intersection.h"
 #include "../../../middleware/content/packages/tables/scenario_reader.h"
 #include "../../../middleware/content/packages/tables/slot_descriptor_reader.h"
+#include <array>
+#include <cstdio>
+
+#include "../../../core/logging/log.h"
 #include "internal.h"
 
 namespace sunrise::client::content::scenarios {
@@ -135,13 +139,41 @@ bool resolve_object(const reader::Source& source,
 
     layouts::RosterGroup candidate{};
     tables::Array declared{};
-    // NOTE: this deliberately does NOT gate on carries_roster_slot. That gate was added by the
-    // upstream roster rewrite and it removes every Tower seasonal event from the roster path:
-    // measured 2026-08-26, the whole install yields only eight roster keys and not one of the six
-    // known event keys appears. carries_roster_slot belongs to the intersection analysis, which is
-    // where the working build called it and where it still is; using it as an admission gate here
-    // is what reduced the Tower from 36 groups to 1.
+    // Does any placed object in this install actually carry a known Tower event registry key?
+    // The six keys were attributed on the pre-merge build; nothing since has observed one. Report
+    // every hit with what it declares, before any admission gate can hide it.
+    {
+        std::uint32_t probeKey = 0;
+        if (tables::object_key(storage.object, probeKey)) {
+            constexpr std::array<std::uint32_t, 7> kEventKeys{
+                0x7C6DE64FU, 0x27060E6CU, 0x6CEFCC01U, 0xD5B68262U,
+                0x00ACD208U, 0x4F4ED92FU, 0x50CC9C7DU};
+            for (const std::uint32_t key : kEventKeys) {
+                if (probeKey != key) {
+                    continue;
+                }
+                tables::Array probeSlots{};
+                const bool hasSlots = tables::object_slots(storage.object, probeSlots);
+                std::array<char, core::log::kLineCapacity> line{};
+                const int written = std::snprintf(
+                    line.data(), line.size(),
+                    "ev=event_key tag=0x%08X key=0x%08X slots=%u wire=%u",
+                    objectTag, probeKey,
+                    hasSlots ? static_cast<unsigned>(probeSlots.count) : 0U,
+                    tables::carries_roster_slot(storage.object) ? 1U : 0U);
+                if (written > 0) {
+                    core::log::write(core::log::Channel::state, core::log::Level::warn,
+                                     {line.data(), static_cast<std::size_t>(written)});
+                }
+                break;
+            }
+        }
+    }
+    // carries_roster_slot is kept as the admission gate. Removing it entirely was measured on
+    // 2026-08-26 and saturates kRosterGroupCapacity (groups=512) before the walk finishes, which
+    // aborts destinations wholesale - the original comment's warning is correct.
     if (!tables::object_key(storage.object, candidate.registryKey) || candidate.registryKey == 0
+        || !tables::carries_roster_slot(storage.object)
         || !tables::object_slots(storage.object, declared) || declared.count == 0
         || declared.count > layouts::kRosterSlotCapacity) {
         return true;
