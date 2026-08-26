@@ -89,6 +89,22 @@ void note_candidate(Walk& walk,
  * @param sliceSetIndex Slice-set index the entry reported.
  * @return True when the registry walked without running out of fixed storage.
  */
+/**
+ * Tests whether a registry key already belongs to a resolved roster group.
+ * @param storage Working storage holding the groups found so far.
+ * @param registryKey Key carried by a placed object.
+ * @return True when some group publishes under that key.
+ */
+[[nodiscard]] bool known_group_key(const RosterStorage& storage,
+                                   std::uint32_t registryKey) noexcept {
+    for (std::size_t index = 0; index < storage.groupCount; ++index) {
+        if (storage.groups[index].registryKey == registryKey) {
+            return true;
+        }
+    }
+    return false;
+}
+
 [[nodiscard]] bool walk_registry(const reader::Source& source,
                                  reader::Scratch& scratch,
                                  RosterStorage& storage,
@@ -114,8 +130,14 @@ void note_candidate(Walk& walk,
                 // Not a group of its own, but it may still carry a group's key - an event's props
                 // do exactly that. The key has to be observed here or this bubble is left out of
                 // the mask and the props are never advertised for it.
+                //
+                // Only keys that are ALREADY a known group count. Observing every carried key
+                // instead would add keys that never become groups, push the destination past
+                // kRosterKeyCapacity and overflow the intersection, which makes safe_roster_keys
+                // and partial_roster_keys both refuse and the destination publish nothing - the
+                // same failure the earlier admission-widening attempts produced.
                 const std::uint32_t carried = memoised_object_key(storage, objectTag);
-                if (carried != 0
+                if (carried != 0 && known_group_key(storage, carried)
                     && !tables::observe_roster_key(walk.intersection, sliceSetIndex, carried)) {
                     return true;
                 }
