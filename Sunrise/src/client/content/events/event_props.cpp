@@ -28,6 +28,7 @@
 #include <Windows.h>
 
 #include "../../../core/logging/log.h"
+#include "../../hooks/teleport/runtime.h"
 #include "../../patterns/image_scan.h"
 
 namespace sunrise::client::content::events {
@@ -142,6 +143,56 @@ constexpr std::array<AreaOffset, 3> kAreaOffsets{{
     {-153.4F, 20.8F, -42.5F, "Annex"}}};
 
 /**
+ * Where each area is, so the player's own position says which one they are standing in.
+ * The Courtyard is included because it is the area a player is usually in, and an area is only
+ * furnished while the player occupies it: an object created in one slice set and positioned in
+ * another is outside that slice set's loaded geometry, so it is invisible, and the switch into the
+ * real area tears it down before it can ever be seen. Measured 2026-08-27: placing all three areas
+ * at once from the Courtyard reported placed=14 of 14 for every one of them and rendered nothing.
+ */
+struct AreaAnchor {
+    float x;
+    float y;
+    float z;
+};
+constexpr std::array<AreaAnchor, 3> kAreaAnchors{{
+    {-121.2F, 55.2F, 0.8F},    // Bazaar
+    {148.1F, 78.5F, 7.4F},     // Hangar
+    {-135.0F, 40.0F, -25.0F}}};  // Annex
+constexpr AreaAnchor kCourtyardAnchor{18.4F, 19.2F, 17.5F};
+
+/**
+ * Which target area the player is standing in.
+ * @return Its index, or the area count when the player is elsewhere - the Courtyard included.
+ */
+[[nodiscard]] std::size_t occupied_area() noexcept {
+    void* const component = hooks::teleport::local_player_component();
+    if (component == nullptr) {
+        return kAreaAnchors.size();
+    }
+    hooks::teleport::Vector at{};
+    if (!hooks::teleport::read_position(component, at)) {
+        return kAreaAnchors.size();
+    }
+    const auto squared = [&at](const AreaAnchor& anchor) noexcept {
+        const float dx = at[0] - anchor.x;
+        const float dy = at[1] - anchor.y;
+        const float dz = at[2] - anchor.z;
+        return dx * dx + dy * dy + dz * dz;
+    };
+    std::size_t best = kAreaAnchors.size();
+    float bestDistance = squared(kCourtyardAnchor);
+    for (std::size_t index = 0; index < kAreaAnchors.size(); ++index) {
+        const float distance = squared(kAreaAnchors[index]);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            best = index;
+        }
+    }
+    return best;
+}
+
+/**
  * Seeds the header the initialiser reads before it will build anything.
  * A zeroed header declares a zero-capacity arena and the initialiser refuses every tag - measured
  * 2026-08-27 as placed=0 of=14 in all three areas, with no other symptom.
@@ -249,10 +300,9 @@ void place_event_props() noexcept {
     if (!bind()) {
         return;
     }
-    for (std::size_t index = 0; index < kAreaOffsets.size(); ++index) {
-        if (g_areaPlaced[index].load(std::memory_order_acquire)) {
-            continue;
-        }
+    // Only the area the player is actually in.
+    const std::size_t index = occupied_area();
+    if (index < kAreaOffsets.size() && !g_areaPlaced[index].load(std::memory_order_acquire)) {
         const AreaOffset& area = kAreaOffsets[index];
         std::size_t placed = 0;
         for (const Placement& source : kDawningCourtyard) {
@@ -261,10 +311,9 @@ void place_event_props() noexcept {
                 ++placed;
             }
         }
-        // Nothing placed means the player is not in this area yet, so leave it for a later poll
-        // rather than burning the one attempt this area gets. Report the first refusal per area,
-        // once, so a walk-through that shows nothing still says WHY - silence here was costing a
-        // whole test cycle to learn nothing.
+        // Nothing placed means the engine refused here, so leave the area for a later poll rather
+        // than burning its one attempt. Report the first refusal per area, once, so a walk-through
+        // that shows nothing still says WHY.
         if (placed == 0) {
             if (!g_areaReported[index].exchange(true, std::memory_order_acq_rel)) {
                 std::array<char, core::log::kLineCapacity> line{};
@@ -277,7 +326,7 @@ void place_event_props() noexcept {
                                      {line.data(), static_cast<std::size_t>(written)});
                 }
             }
-            continue;
+            return;
         }
         g_areaPlaced[index].store(true, std::memory_order_release);
         report(area.name, placed, kDawningCourtyard.size());
