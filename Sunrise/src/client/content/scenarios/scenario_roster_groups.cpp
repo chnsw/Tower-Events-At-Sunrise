@@ -226,9 +226,8 @@ bool resolve_object(const reader::Source& source,
         storage.memo[slot].registryKey = candidate.registryKey;
     }
     if (candidate.registryKey == 0
-        // No wire-type gate. It admits eight groups across the whole install and rejects every
-        // seasonal event; the pre-merge build published 36 for the Tower alone. Widening this
-        // saturated before only because RosterGroup was 5 KB and the table could not grow.
+        || !(tables::carries_roster_slot(storage.object)
+             || tables::is_event_roster_key(candidate.registryKey))
         || !tables::object_slots(storage.object, declared) || declared.count == 0
         || declared.count > layouts::kRosterSlotCapacity) {
         return true;
