@@ -105,11 +105,36 @@ void note_candidate(Walk& walk,
     return false;
 }
 
+// TEMPORARY census probe: strip before any PR.
+// The Tower's definitive destination row. For this row only, every keyed object is logged with the
+// bubble and state whose registry named it, so one boot's log answers which keys a state>0
+// registry adds over the same bubble's state-0 registry - those are the event keys.
+constexpr std::uint32_t kCensusRowTag = 0x80B4A0F4;
+
+// TEMPORARY census probe: strip before any PR.
+void report_census(std::uint64_t bubbleIndex,
+                   std::uint64_t stateIndex,
+                   std::uint32_t objectTag,
+                   std::uint32_t key) noexcept {
+    std::array<char, 96> line{};
+    const int written = std::snprintf(
+        line.data(), line.size(), "ev=key_census bubble=%llu state=%llu obj=0x%08X key=0x%08X",
+        static_cast<unsigned long long>(bubbleIndex),
+        static_cast<unsigned long long>(stateIndex), objectTag, key);
+    if (written > 0) {
+        core::log::write(core::log::Channel::state, core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
+}
+
 [[nodiscard]] bool walk_registry(const reader::Source& source,
                                  reader::Scratch& scratch,
                                  RosterStorage& storage,
                                  Walk& walk,
-                                 std::uint32_t sliceSetIndex) noexcept {
+                                 std::uint32_t sliceSetIndex,
+                                 std::uint32_t rowTag,
+                                 std::uint64_t bubbleIndex,
+                                 std::uint64_t stateIndex) noexcept {
     for (std::size_t descriptor = 0; descriptor < kRegistryDescriptors.size(); ++descriptor) {
         tables::Array objects{};
         if (!tables::registry_objects(
@@ -125,6 +150,13 @@ void note_candidate(Walk& walk,
             std::uint16_t group = kNotARosterGroup;
             if (!resolve_object(source, scratch, storage, objectTag, group)) {
                 return false;
+            }
+            // TEMPORARY census probe: strip before any PR.
+            if (rowTag == kCensusRowTag) {
+                const std::uint32_t censusKey = memoised_object_key(storage, objectTag);
+                if (censusKey != 0) {
+                    report_census(bubbleIndex, stateIndex, objectTag, censusKey);
+                }
             }
             if (group == kNotARosterGroup) {
                 // Not a group of its own, but it may still carry a group's key - an event's props
@@ -164,7 +196,8 @@ void note_candidate(Walk& walk,
 [[nodiscard]] bool walk_destination(const reader::Source& source,
                                     reader::Scratch& scratch,
                                     RosterStorage& storage,
-                                    Walk& walk) noexcept {
+                                    Walk& walk,
+                                    std::uint32_t rowTag) noexcept {
     tables::Array bubbles{};
     if (!tables::scenario_bubbles(storage.scenario, bubbles)) {
         return false;
@@ -197,7 +230,8 @@ void note_candidate(Walk& walk,
                 tables::observe_unresolved_slice_set(walk.intersection);
                 continue;
             }
-            if (!walk_registry(source, scratch, storage, walk, sliceSetIndex)) {
+            if (!walk_registry(source, scratch, storage, walk, sliceSetIndex, rowTag,
+                               bubbleIndex, stateIndex)) {
                 return false;
             }
         }
@@ -235,7 +269,7 @@ bool build_rosters(const reader::Source& source,
             continue;
         }
         Walk walk{};
-        if (!walk_destination(source, scratch, storage, walk)) {
+        if (!walk_destination(source, scratch, storage, walk, row.tag)) {
             continue;
         }
         publish_groups(walk, row);

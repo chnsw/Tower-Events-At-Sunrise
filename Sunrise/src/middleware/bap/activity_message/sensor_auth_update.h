@@ -23,7 +23,7 @@ inline constexpr std::uint16_t kMinimumGrantToken = 1;
  * No installed destination reaches more than two objects that go in the top-level list, and the
  * per-bubble half adds its own. Phase 2 seeds every one of them.
  */
-inline constexpr std::size_t kGroupCapacity = 224;
+inline constexpr std::size_t kGroupCapacity = 192;
 /** The three lifetime states spawn gate G4's unbounded jump table accepts. */
 inline constexpr std::array<std::uint8_t, 3> kLifetimeStates = {3, 6, 10};
 /** Slot flag bit for a block that carries a sense reset bit. */

@@ -40,7 +40,7 @@ inline constexpr std::size_t kDestinationGroupCapacity = 48;
  * every one of the Tower's 112 admitted event keys is bubble-specific, so they all land here, and
  * publish_per_bubble truncates past this silently - which key survives depends on candidate order.
  */
-inline constexpr std::size_t kDestinationBubbleGroupCapacity = 160;
+inline constexpr std::size_t kDestinationBubbleGroupCapacity = 48;
 /** A per-bubble group's bubble mask, one bit per bubble, as it is stored on disk. */
 inline constexpr std::size_t kBubbleMaskBytes = kBubbleCapacity / 8;
 /** Slot flag bit for a slot whose type declares a sense schema. */
