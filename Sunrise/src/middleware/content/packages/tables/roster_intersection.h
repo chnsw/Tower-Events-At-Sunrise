@@ -67,21 +67,39 @@ inline constexpr std::array<std::uint16_t, 9> kRosterSlotTypes = {
 [[nodiscard]] bool carries_roster_slot(std::span<const std::byte> object) noexcept;
 
 /**
- * The registry keys of the Tower's seasonal event objects.
- * Each event is carried by one placed object with its own key. None of them declares a wire slot
- * type, so `carries_roster_slot` rejects every one and the event never reaches the roster. They are
- * admitted by key instead. Attribution is the six-run group test recorded in the knowledge graph as
- * `event-keys`; `0x50CC9C7D` is a real group that renders nothing visible and is kept so it can be
- * told apart from a missing one rather than silently dropped.
+ * Every registry key the Tower's own bubble registries name.
+ * Seasonal content is carried by placed objects that declare no wire slot type, so
+ * `carries_roster_slot` rejects them and they never reach the roster. Admitting them by key is what
+ * puts them back, and the key set has to cover every bubble: the six keys the knowledge graph
+ * records as `event-keys` were attributed by group-testing in the Courtyard, and the Courtyard is
+ * the only place they appear. Walking the Tower's scenario to its per-bubble registries - Annex
+ * 0x80B4AF2D, Bazaar 0x80B4AF3E, Courtyard 0x80B4AF5F, Hangar 0x80B4AF66 - finds 124 keyed objects
+ * carrying these keys, with the Bazaar's 33 and the Hangar's 41 sharing none of the six.
+ *
+ * Listing the Tower's keys explicitly keeps the cost bounded. Dropping the wire-type gate outright
+ * admits every placed object in the install, which saturates the group table and hangs the roster
+ * walk before it finishes - measured twice.
  */
-inline constexpr std::array<std::uint32_t, 7> kEventRosterKeys = {
-    0x7C6DE64FU,   // Festival of the Lost
-    0x27060E6CU,   // Iron Banner
-    0x6CEFCC01U,   // Crimson Days
-    0xD5B68262U,   // Solstice of Heroes
-    0x00ACD208U,   // The Dawning
-    0x4F4ED92FU,   // bazaar urns
-    0x50CC9C7DU};  // renders nothing visible
+inline constexpr std::array<std::uint32_t, 112> kEventRosterKeys = {
+    0x009AEC2EU, 0x00ACD208U, 0x02C996DDU, 0x05053C90U, 0x05053C93U, 0x08E64D48U,
+    0x099B0342U, 0x0AFC31B6U, 0x0D116593U, 0x0E4924B4U, 0x0E4924B7U, 0x15EFED42U,
+    0x169C7EE9U, 0x17BEAED0U, 0x17BEAED3U, 0x18258BFAU, 0x1F708F98U, 0x1F708F9BU,
+    0x2100D817U, 0x22560BFEU, 0x2488B37AU, 0x24F3CF79U, 0x263DF0C9U, 0x27060E6CU,
+    0x29A3487DU, 0x2B33841AU, 0x2E2F5795U, 0x2E4B927CU, 0x2E4B927FU, 0x2EFB59ADU,
+    0x2F2B8D00U, 0x3A23A717U, 0x3BC79A8DU, 0x40AEBF90U, 0x412D8185U, 0x4367863AU,
+    0x43CF2C96U, 0x4C367B89U, 0x4F4ED92FU, 0x50CC9C7DU, 0x526D9E15U, 0x586C0FDFU,
+    0x58B3D759U, 0x5C916B32U, 0x66508CC0U, 0x66508CC3U, 0x6733FE14U, 0x6747EE42U,
+    0x6B449368U, 0x6B44936BU, 0x6C440D9CU, 0x6C8D1D54U, 0x6CEFCC01U, 0x6D3740C6U,
+    0x6E087824U, 0x728E75D1U, 0x73BF1A62U, 0x78438031U, 0x7C6DE64FU, 0x8066C829U,
+    0x82BA5299U, 0x8353EBD5U, 0x83C0D67EU, 0x87FE9FA7U, 0x8921C738U, 0x8A4E2843U,
+    0x8A5F970CU, 0x8D8E87D8U, 0x9052672CU, 0x935429A1U, 0x941348D0U, 0x94DE15DEU,
+    0x96E0A5E5U, 0x9855FF7CU, 0x9874FDE2U, 0x9D5CEE73U, 0x9E098FCCU, 0xAACA9424U,
+    0xAACA9427U, 0xAC21AC48U, 0xAC21AC4BU, 0xAD4E8C09U, 0xAD4E8C0AU, 0xAE25D8EDU,
+    0xAEAD9309U, 0xB5B4DF10U, 0xBE373EFDU, 0xC7B9E8F6U, 0xCD6CEC62U, 0xD227B29FU,
+    0xD30F0080U, 0xD30F0083U, 0xD55899E6U, 0xD5B68262U, 0xD67F8F82U, 0xD88EF9E0U,
+    0xDA01F80AU, 0xDA989AA3U, 0xDD490DD8U, 0xE7F0A95BU, 0xE8E9DF63U, 0xEE34BBABU,
+    0xF25400A1U, 0xF25400A2U, 0xF36C5584U, 0xF8790DA5U, 0xFC6B8707U, 0xFEAAF75DU,
+    0xFEAAF75EU, 0xFEAD0123U, 0xFFAAF8B0U, 0xFFAAF8B3U};  // renders nothing visible
 
 /**
  * Tests whether one registry key names a Tower seasonal event object.
