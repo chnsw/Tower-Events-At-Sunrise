@@ -27,6 +27,7 @@
 
 #include <Windows.h>
 
+#include "../../../core/filesystem/path.h"
 #include "../../../core/logging/log.h"
 #include "../../hooks/teleport/runtime.h"
 #include "../../player/player_position.h"
@@ -74,6 +75,14 @@ PlacementInitialize g_directInitialize = nullptr;
 ObjectInstantiate g_instantiate = nullptr;
 ObjectInstantiate g_factory = nullptr;
 std::atomic_bool g_bound{false};
+/**
+ * Whether translated placement runs at all this session.
+ * Two routes can furnish the other areas - advertising each bubble's own event carriers through
+ * the roster, or placing Courtyard decorations at translated coordinates - and running both at once
+ * makes what appears on screen unattributable. Placement is on only when `event_props_enable.txt`
+ * exists beside settings.json, read once when the entry points are bound.
+ */
+std::atomic_bool g_enabled{false};
 /**
  * Which areas are done.
  * The client instantiates into the slice set it currently holds, so a Bazaar coordinate refuses
@@ -270,6 +279,15 @@ void reset_storage(PlacementStorage& storage) noexcept {
     g_directInitialize = reinterpret_cast<PlacementInitialize>(direct);
     g_initialize = reinterpret_cast<PlacementInitialize>(initialize);
     g_instantiate = reinterpret_cast<ObjectInstantiate>(instantiate);
+    {
+        std::array<char, 64> flag{};
+        const bool enabled = core::path::read_artifact_text(L"event_props_enable.txt", flag);
+        g_enabled.store(enabled, std::memory_order_release);
+        core::log::write(core::log::Channel::client,
+                         core::log::Level::info,
+                         enabled ? "ev=event_props stage=gate result=enabled"
+                                 : "ev=event_props stage=gate result=disabled");
+    }
     g_bound.store(true, std::memory_order_release);
     return initialize != nullptr && instantiate != nullptr;
 }
@@ -298,7 +316,7 @@ void report(const char* area, std::size_t placed, std::size_t attempted) noexcep
 } // namespace
 
 void place_event_props() noexcept {
-    if (!bind()) {
+    if (!bind() || !g_enabled.load(std::memory_order_acquire)) {
         return;
     }
     // Only the area the player is actually in.
