@@ -1,5 +1,5 @@
 # NO EVENTS: bare Tower, every seasonal group and carrier withheld.
-# Copy this file over roster_exclude_keys.txt and relaunch. No rebuild, no cache clear. Keys listed here are WITHHELD.
+# Copy this file over roster_exclude_keys.txt, then go to orbit and load back into the Tower (or use the Events page in the Sunrise menu). No relaunch, no rebuild, no cache clear. Keys listed here are WITHHELD.
 0x00ACD208
 0x2F2B8D00
 0x6E087824
