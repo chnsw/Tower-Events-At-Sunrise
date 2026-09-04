@@ -1,5 +1,5 @@
 # Attributed 2026-09-04 by withholding all but one carrier per area and walking the Tower.
-# bubble 6 Courtyard: 0x00ACD208 Dawning | 0x27060E6C Iron Banner | 0x6CEFCC01 Crimson Days | 0xD5B68262 Solstice | 0x7C6DE64F Festival of the Lost | 0x50CC9C7D mechanics (snowball force-equip + Guardian Games batons; nothing visible alone)
+# bubble 6 Courtyard: 0x00ACD208 Dawning | 0x27060E6C Iron Banner | 0x6CEFCC01 Crimson Days | 0xD5B68262 Solstice | 0x7C6DE64F Festival of the Lost | 0x50CC9C7D Courtyard vendors' squad group (Banshee, Rahool, postmaster, Shaxx, Tess, Zavala, Eva) - not an event, nothing visible alone, never withheld
 # bubble 1 Bazaar:    0x2F2B8D00 Dawning snow | 0xFC6B8707 Festival of the Lost | 0x08E64D48 mechanics (nothing visible alone)
-# bubble 7 Hangar:    0x6E087824 Dawning snow | 0xEE34BBAB Festival of the Lost | 0xDA989AA3 Guardian Games football arena | 0x9052672C Saint-14 / Trials | 0x099B0342 mechanics (nothing visible alone)
+# bubble 7 Hangar:    0x6E087824 Dawning snow | 0xEE34BBAB Festival of the Lost | 0xDA989AA3 Dawning rink (ball, goalmouths, scoreboards, confetti, fireworks) | 0x9052672C Saint-14 / Trials | 0x099B0342 mechanics (nothing visible alone)
 # bubble 0 Annex:     0x6D3740C6 Festival of the Lost | 0x4F4ED92F is NOT an event: the o_penumbra_vendor slot (Benedict 99-40, Season of Opulence), same shape as the Drifter and Ada-1 slots beside it; nothing visible when published alone, so it is never withheld

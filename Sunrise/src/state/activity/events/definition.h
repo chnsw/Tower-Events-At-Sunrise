@@ -20,7 +20,6 @@ enum class Event : std::uint8_t {
     ironBanner,
     crimsonDays,
     solstice,
-    guardianGames,
     trialsSaint14,
     count,
 };
@@ -34,19 +33,17 @@ inline constexpr std::array<const char*, kEventCount> kEventNames = {
     "Iron Banner",
     "Crimson Days",
     "Solstice of Heroes",
-    "Guardian Games",
     "Trials of Osiris / Saint-14",
 };
 
 /** Where each event shows, in `Event` order. */
 inline constexpr std::array<const char*, kEventCount> kEventAreas = {
     "Courtyard, Bazaar, Hangar and Annex.",
-    "Courtyard, with snow in the Bazaar and Hangar. Bungie dressed no Dawning in the Annex.",
+    "Courtyard, snow in the Bazaar and Hangar, and the Hangar rink with its ball game, goals and "
+    "scoreboards. Bungie dressed no Dawning in the Annex.",
     "Courtyard only.",
     "Courtyard only.",
     "Courtyard only.",
-    "The Hangar football arena. The Courtyard batons share a group with the snowball fight, so "
-    "they stay whatever this says.",
     "The Saint-14 ship in the Hangar.",
 };
 
@@ -59,10 +56,11 @@ struct EventKey {
 
 /**
  * Every event key the roster may withhold. Four admitted keys are deliberately not here, so the
- * page never withholds them: the three mechanics groups (0x50CC9C7D, 0x08E64D48, 0x099B0342),
- * which show nothing on their own and one of which carries the snowball fight, and 0x4F4ED92F,
- * which is not an event at all but the Annex `o_penumbra_vendor` slot (Benedict 99-40, Season of
- * Opulence), the same shape as the Drifter and Ada-1 slots beside it in the registry.
+ * page never withholds them, because their slots name no event: 0x50CC9C7D is the Courtyard
+ * vendors' squad group (Banshee, Rahool, the postmaster, Shaxx, Tess, Zavala, Eva), 0x08E64D48 and
+ * 0x099B0342 hold bare engagement sensors, and 0x4F4ED92F is the Annex `o_penumbra_vendor` slot
+ * (Benedict 99-40, Season of Opulence), the same shape as the Drifter and Ada-1 slots beside it.
+ * None of them shows anything on its own.
  */
 inline constexpr std::array<EventKey, 12> kEventKeys = {{
     {0x7C6DE64FU, Event::festivalOfTheLost, "Courtyard"},
@@ -72,10 +70,10 @@ inline constexpr std::array<EventKey, 12> kEventKeys = {{
     {0x00ACD208U, Event::dawning, "Courtyard"},
     {0x2F2B8D00U, Event::dawning, "Bazaar snow"},
     {0x6E087824U, Event::dawning, "Hangar snow"},
+    {0xDA989AA3U, Event::dawning, "Hangar rink"},
     {0x27060E6CU, Event::ironBanner, "Courtyard"},
     {0x6CEFCC01U, Event::crimsonDays, "Courtyard"},
     {0xD5B68262U, Event::solstice, "Courtyard"},
-    {0xDA989AA3U, Event::guardianGames, "Hangar football"},
     {0x9052672CU, Event::trialsSaint14, "Hangar"},
 }};
 

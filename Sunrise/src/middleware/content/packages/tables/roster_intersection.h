@@ -91,7 +91,7 @@ inline constexpr std::array<std::uint32_t, 16> kEventRosterKeys = {
     0x00ACD208U,   // Dawning (Courtyard)
     0x27060E6CU,   // Iron Banner (Courtyard)
     0x4F4ED92FU,   // Annex o_penumbra_vendor slot (Benedict 99-40); not an event, kept for the baseline
-    0x50CC9C7DU,   // unnamed (Courtyard)
+    0x50CC9C7DU,   // Courtyard vendors' squad group; not an event, kept for the baseline
     0x6CEFCC01U,   // Crimson Days (Courtyard)
     0x7C6DE64FU,   // Festival of the Lost (Courtyard)
     0xD5B68262U,   // Solstice (Courtyard)
@@ -105,7 +105,7 @@ inline constexpr std::array<std::uint32_t, 16> kEventRosterKeys = {
     0xFC6B8707U,   // Bazaar carrier
     0x099B0342U,   // Hangar carrier
     0x9052672CU,   // Hangar carrier
-    0xDA989AA3U,   // Hangar carrier
+    0xDA989AA3U,   // Hangar carrier: the Dawning rink (ball, goals, scoreboards, confetti)
     0xEE34BBABU,   // Hangar carrier
     0x6E087824U};  // Hangar carrier
 
