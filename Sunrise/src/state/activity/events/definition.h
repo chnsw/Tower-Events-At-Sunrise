@@ -22,7 +22,6 @@ enum class Event : std::uint8_t {
     solstice,
     guardianGames,
     trialsSaint14,
-    annexUrns,
     count,
 };
 
@@ -37,7 +36,6 @@ inline constexpr std::array<const char*, kEventCount> kEventNames = {
     "Solstice of Heroes",
     "Guardian Games",
     "Trials of Osiris / Saint-14",
-    "Annex urns",
 };
 
 /** Where each event shows, in `Event` order. */
@@ -50,7 +48,6 @@ inline constexpr std::array<const char*, kEventCount> kEventAreas = {
     "The Hangar football arena. The Courtyard batons share a group with the snowball fight, so "
     "they stay whatever this says.",
     "The Saint-14 ship in the Hangar.",
-    "Hanging urns in the Annex. Which event they belong to is not known.",
 };
 
 /** One registry key, the event it carries and the area it dresses. */
@@ -61,11 +58,13 @@ struct EventKey {
 };
 
 /**
- * Every event key the roster may withhold. The three mechanics groups (0x50CC9C7D, 0x08E64D48,
- * 0x099B0342) show nothing on their own and one of them carries the snowball fight, so they are
- * not here and this page never withholds them.
+ * Every event key the roster may withhold. Four admitted keys are deliberately not here, so the
+ * page never withholds them: the three mechanics groups (0x50CC9C7D, 0x08E64D48, 0x099B0342),
+ * which show nothing on their own and one of which carries the snowball fight, and 0x4F4ED92F,
+ * which is not an event at all but the Annex `o_penumbra_vendor` slot (Benedict 99-40, Season of
+ * Opulence), the same shape as the Drifter and Ada-1 slots beside it in the registry.
  */
-inline constexpr std::array<EventKey, 13> kEventKeys = {{
+inline constexpr std::array<EventKey, 12> kEventKeys = {{
     {0x7C6DE64FU, Event::festivalOfTheLost, "Courtyard"},
     {0xFC6B8707U, Event::festivalOfTheLost, "Bazaar"},
     {0xEE34BBABU, Event::festivalOfTheLost, "Hangar"},
@@ -78,7 +77,6 @@ inline constexpr std::array<EventKey, 13> kEventKeys = {{
     {0xD5B68262U, Event::solstice, "Courtyard"},
     {0xDA989AA3U, Event::guardianGames, "Hangar football"},
     {0x9052672CU, Event::trialsSaint14, "Hangar"},
-    {0x4F4ED92FU, Event::annexUrns, "Annex"},
 }};
 
 /** Room for every mapped key and for ones a hand-edited file names that the map does not. */

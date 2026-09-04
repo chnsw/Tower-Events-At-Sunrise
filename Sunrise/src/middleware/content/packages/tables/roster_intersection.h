@@ -90,7 +90,7 @@ inline constexpr std::array<std::uint16_t, 9> kRosterSlotTypes = {
 inline constexpr std::array<std::uint32_t, 16> kEventRosterKeys = {
     0x00ACD208U,   // Dawning (Courtyard)
     0x27060E6CU,   // Iron Banner (Courtyard)
-    0x4F4ED92FU,   // urns (bubble 0)
+    0x4F4ED92FU,   // Annex o_penumbra_vendor slot (Benedict 99-40); not an event, kept for the baseline
     0x50CC9C7DU,   // unnamed (Courtyard)
     0x6CEFCC01U,   // Crimson Days (Courtyard)
     0x7C6DE64FU,   // Festival of the Lost (Courtyard)

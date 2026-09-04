@@ -7,6 +7,5 @@
 0x27060E6C   # iron_banner (Courtyard)
 0x6CEFCC01   # crimson_days (Courtyard)
 0xD5B68262   # solstice (Courtyard)
-0x4F4ED92F   # urns (Annex bubble) - event unknown
 0xDA989AA3   # guardian_games football (Hangar)
 0x9052672C   # saint_14 / trials (Hangar)
