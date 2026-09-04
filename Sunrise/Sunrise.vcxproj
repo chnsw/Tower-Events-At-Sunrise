@@ -442,6 +442,7 @@
     <ClCompile Include="src\state\build_data\spawn_sets\spawn_set_catalog.cpp" />
     <ClCompile Include="src\state\build_data\hash_names\hash_name_catalog.cpp" />
     <ClCompile Include="src\state\activity\forced\activity_forced_destination.cpp" />
+    <ClCompile Include="src\state\activity\events\activity_event_selection.cpp" />
     <ClCompile Include="src\state\build_data\runtime\build_data_roster_runtime.cpp" />
     <ClCompile Include="src\client\content\scenarios\scenario_build.cpp" />
     <ClCompile Include="src\client\content\scenarios\scenario_collect.cpp" />
@@ -497,6 +498,7 @@
     <ClCompile Include="src\server\ui\runtime\server_ui_module_runtime.cpp" />
     <ClCompile Include="src\server\ui\activity_override\activity_override_panel.cpp" />
     <ClCompile Include="src\server\ui\activity_override\activity_override_lists.cpp" />
+    <ClCompile Include="src\server\ui\tower_events\tower_events_panel.cpp" />
     <ClCompile Include="src\server\transport\bap_listener.cpp" />
     <ClCompile Include="src\server\bap\bap_route.cpp" />
     <ClCompile Include="src\server\bap\plaintext.cpp" />
@@ -1020,6 +1022,8 @@
     <ClInclude Include="src\state\activity\destination\definition.h" />
     <ClInclude Include="src\state\activity\forced\definition.h" />
     <ClInclude Include="src\state\activity\forced\activity_forced_destination.h" />
+    <ClInclude Include="src\state\activity\events\definition.h" />
+    <ClInclude Include="src\state\activity\events\activity_event_selection.h" />
     <ClInclude Include="src\state\activity\destination\activity_destination_snapshot.h" />
     <ClInclude Include="src\state\activity\destination\activity_destination_validation.h" />
     <ClInclude Include="src\state\activity\destination\activity_destination_spawn_binding.h" />
@@ -1101,6 +1105,7 @@
     <ClInclude Include="src\server\ui\runtime\server_ui_module_runtime.h" />
     <ClInclude Include="src\server\ui\activity_override\activity_override_panel.h" />
     <ClInclude Include="src\server\ui\activity_override\activity_override_lists.h" />
+    <ClInclude Include="src\server\ui\tower_events\tower_events_panel.h" />
     <ClInclude Include="src\server\bap\runtime.h" />
     <ClInclude Include="src\server\bap\internal.h" />
     <ClInclude Include="src\server\bap\encrypted\internal.h" />

@@ -2,16 +2,12 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
-#include <cstdio>
 #include <string_view>
 
-#include "../../../../../core/filesystem/path.h"
-#include "../../../../../core/logging/log.h"
-#include "../../../../../core/settings/rule_text.h"
 #include "../../../../../state/account/account_state.h"
 #include "../../../../../state/activity/defaults/activity_defaults_snapshot.h"
 #include "../../../../../state/activity/destination/activity_destination_spawn_binding.h"
+#include "../../../../../state/activity/events/activity_event_selection.h"
 #include "../../../../../state/activity/membership/activity_membership_query.h"
 #include "../../../../../state/activity/runtime.h"
 #include "../../../../../state/build_data/runtime.h"
@@ -45,76 +41,11 @@ constexpr std::uint64_t kIdentityLowMask = 0xFFFFFFFFULL;
 constexpr std::uint8_t kSlotTypeLifetime = 17;
 
 /**
- * Registry keys the roster must not publish, from `roster_exclude_keys.txt` beside settings.json.
- *
- * The Tower's seasonal events are per-bubble roster groups, one key per event per area. Showing one
- * event is subtractive: every other event's keys are withheld. The list is a file rather than a
- * setting because it changes every run and settings.json has no array parsing; it is read once per
- * run, so a change costs a relaunch and not a rebuild. One hex key per line, `0x` optional, `#`
- * comments.
- *
- * A group carrying the activity state (a type-13 or type-17 slot) is never excluded whatever the
- * file says: withholding it stalls the boot at step 36, which presents as a hang, not a bare Tower.
+ * A group carrying the activity state (a type-13 or type-17 slot) is never withheld whatever the
+ * events selection says: withholding it stalls the boot at step 36, which presents as a hang, not
+ * a bare Tower.
+ * @param group Resolved roster group. @return True when it holds the activity state.
  */
-constexpr std::size_t kExcludedKeyCapacity = 64;
-std::array<std::uint32_t, kExcludedKeyCapacity> g_excludedKeys{};
-std::atomic<std::size_t> g_excludedCount{0};
-std::atomic_bool g_excludedLoaded{false};
-
-void load_excluded_keys() noexcept {
-    if (g_excludedLoaded.load(std::memory_order_acquire)) {
-        return;
-    }
-    static std::array<char, core::rule_text::kRuleTextCapacity> text{};
-    std::size_t count = 0;
-    if (core::path::read_artifact_text(L"roster_exclude_keys.txt", text)) {
-        // The presets write `0x` prefixes. The cursor reads bare hex, so blank the prefix out
-        // where it starts a field; a bare `0` would otherwise be read and dropped as key zero.
-        for (std::size_t at = 0; at + 1 < text.size() && text[at] != '\0'; ++at) {
-            const bool prefix = text[at] == '0' && (text[at + 1] == 'x' || text[at + 1] == 'X');
-            const bool starts = at == 0 || text[at - 1] == ' ' || text[at - 1] == '\t'
-                                || text[at - 1] == '\n' || text[at - 1] == '\r';
-            if (prefix && starts) {
-                text[at] = ' ';
-                text[at + 1] = ' ';
-            }
-        }
-        core::rule_text::Cursor rules{text.data()};
-        while (count < g_excludedKeys.size() && rules.seek_field()) {
-            const std::uint32_t key = rules.read_hex();
-            if (key != 0) {
-                g_excludedKeys[count++] = key;
-            }
-        }
-    }
-    std::array<char, core::log::kLineCapacity> line{};
-    int used = std::snprintf(line.data(), line.size(), "ev=roster stage=keys excluded=%zu", count);
-    for (std::size_t index = 0; index < count && used > 0
-                                && static_cast<std::size_t>(used) < line.size();
-         ++index) {
-        used += std::snprintf(line.data() + used, line.size() - static_cast<std::size_t>(used),
-                              " 0x%08X", g_excludedKeys[index]);
-    }
-    if (used > 0) {
-        core::log::write(core::log::Channel::server, core::log::Level::info,
-                         {line.data(), (std::min)(static_cast<std::size_t>(used), line.size() - 1)});
-    }
-    g_excludedCount.store(count, std::memory_order_release);
-    g_excludedLoaded.store(true, std::memory_order_release);
-}
-
-/** @param key Registry key about to be published. @return True when the file withholds it. */
-[[nodiscard]] bool key_excluded(std::uint32_t key) noexcept {
-    const std::size_t count = g_excludedCount.load(std::memory_order_acquire);
-    for (std::size_t index = 0; index < count; ++index) {
-        if (g_excludedKeys[index] == key) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/** @param group Resolved roster group. @return True when it holds the activity state. */
 [[nodiscard]] bool carries_activity_state(const layouts::RosterGroup& group) noexcept {
     for (std::size_t slot = 0; slot < group.slotCount; ++slot) {
         if (group.slotTypes[slot] == kSlotTypeParticipation
@@ -234,7 +165,7 @@ fill_roster(const layouts::Definition& layout, Scratch& scratch, message::Roster
     // A withheld group is left out of BOTH halves - the group list and its bubble's sub-block -
     // and the survivors are compacted so each kept group still lines up with its own mask. A group
     // registered but named by no sub-block would be one the client waits on and never seeds.
-    load_excluded_keys();
+    // Which keys are withheld is State's: the Tower events selection, which moves only on a join.
     std::array<std::uint64_t, layouts::kDestinationBubbleGroupCapacity> keptMasks{};
     std::size_t kept = 0;
     for (std::size_t index = 0; index < layout.bubbleGroupCount; ++index) {
@@ -242,7 +173,8 @@ fill_roster(const layouts::Definition& layout, Scratch& scratch, message::Roster
         if (!state::build_data::find_roster_group(layout.bubbleGroups[index], probe)) {
             return false;
         }
-        if (key_excluded(probe.registryKey) && !carries_activity_state(probe)) {
+        if (state::activity::events::withheld(probe.registryKey)
+            && !carries_activity_state(probe)) {
             continue;
         }
         if (!fill_group(
