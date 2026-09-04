@@ -1,0 +1,2 @@
+# ALL EVENTS: nothing withheld; every seasonal group in every area.
+# Copy this file over roster_exclude_keys.txt and relaunch. No rebuild, no cache clear. Keys listed here are WITHHELD.

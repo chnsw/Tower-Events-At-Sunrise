@@ -1,0 +1,15 @@
+# SAINT-14 / TRIALS (Hangar only).
+# Copy this file over roster_exclude_keys.txt and relaunch. No rebuild, no cache clear. Keys listed here are WITHHELD.
+# The three mechanics groups (0x50CC9C7D, 0x08E64D48, 0x099B0342) show nothing on their own and are kept in every event preset.
+0x00ACD208
+0x2F2B8D00
+0x6E087824
+0x7C6DE64F
+0xFC6B8707
+0xEE34BBAB
+0x6D3740C6
+0x27060E6C
+0x6CEFCC01
+0xD5B68262
+0x4F4ED92F
+0xDA989AA3
