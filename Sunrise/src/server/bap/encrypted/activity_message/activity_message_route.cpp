@@ -28,6 +28,7 @@
 #include "middleware/bap/activity_message/activity_entity_slot_request_parser.h"
 #include "patch_epoch/activity_patch_epoch_route.h"
 #include "receipts/activity_message_receipts.h"
+#include "festival_pickups.h"
 
 namespace sunrise::server::bap::encrypted::activity_message {
 namespace {
@@ -328,6 +329,10 @@ bool process(const ActivityClientBinding& binding,
         return true;
     }
     bool prepared = false;
+    if (messageType == service::incident::kMessageType) {
+        festival_pickups::receive(binding, request);
+        return frame_only(request);
+    }
     if (request.messageType == epoch_message::kMessageType) {
         prepared = patch_epoch::prepare(request.accountHandle, request, plan);
     } else if (request.messageType == kJoinRequestMessageType) {

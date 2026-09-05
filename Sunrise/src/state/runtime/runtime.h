@@ -138,6 +138,8 @@ struct PendingProfileItemAcquisition {
     std::size_t profileIndex{};
     std::int32_t previousQuantity{};
     std::int32_t acquiredQuantity{};
+    /** Server-authored stack grant; Collections always grants one unit. */
+    std::int32_t acquiredAmount{1};
     std::int32_t previousMutationSerial{};
     std::int32_t acquiredMutationSerial{};
     std::uint16_t collectibleIndex{};
@@ -369,12 +371,14 @@ void shutdown() noexcept;
  * @param collectibleIndex Collections row the Client pulled from.
  * @param definitionHash Installed stackable definition requested by the Client.
  * @param mutation Gets the checked profile before/after images without changing account State.
- * @return True when the definition belongs to the main profile array and one unit fits.
+ * @param amount Positive server-authored reward amount; Collections must still request one.
+ * @return True when the definition belongs to the main profile array and the whole grant fits.
  */
 [[nodiscard]] bool
 prepare_profile_item_acquisition(std::uint16_t collectibleIndex,
                                  std::uint32_t definitionHash,
-                                 PendingProfileItemAcquisition& mutation) noexcept;
+                                 PendingProfileItemAcquisition& mutation,
+                                 std::int32_t amount = 1) noexcept;
 
 /**
  * Materializes a prepared profile acquisition over the current account only while its complete

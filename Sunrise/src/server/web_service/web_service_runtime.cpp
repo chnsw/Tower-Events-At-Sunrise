@@ -23,6 +23,7 @@
 #include "../../middleware/web_service/messages/opcode903.h"
 #include "../../middleware/web_service/web_service_envelope.h"
 #include "../../state/account/account_state.h"
+#include "../../state/activity/events/activity_event_selection.h"
 #include "../../state/build_data/runtime.h"
 #include "../../state/runtime/runtime.h"
 #include "opcode_routes.h"
@@ -149,6 +150,9 @@ bool consume(std::span<const std::byte> request,
     report_request(message);
 
     if (message.opcode == middleware::web_service::messages::opcode205::kOpcode) {
+        // The Tower events selection owns the events' unlock flags in this object, so it is read
+        // before the first snapshot goes out.
+        state::activity::events::ensure_loaded();
         const auto investment = state::investment_snapshot();
         return middleware::web_service::messages::opcode205::encode_response(
                    message, investment, response, written)
@@ -164,6 +168,7 @@ bool consume(std::span<const std::byte> request,
         if (!bootstrap.hasPrimarySoid) {
             bootstrap.primarySoid = state::account_snapshot().primarySoid;
         }
+        state::activity::events::ensure_loaded();
         const auto investment = state::investment_snapshot();
         if (!parsed
             || !middleware::web_service::messages::opcode503::encode_response(

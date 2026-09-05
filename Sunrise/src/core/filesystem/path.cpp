@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 namespace sunrise::core::path {
 namespace {
@@ -142,6 +143,28 @@ bool read_artifact_text(std::wstring_view relative, std::span<char> text) noexce
     }
     text[read] = '\0';
     return true;
+}
+
+/** Writes one Sunrise-owned text file whole, replacing what was there. */
+bool write_artifact_text(std::wstring_view relative, std::string_view text) noexcept {
+    if (text.size() > (std::numeric_limits<DWORD>::max)()) {
+        return false;
+    }
+    Buffer file{};
+    if (!artifact_file(relative, file)) {
+        return false;
+    }
+    const HANDLE handle = CreateFileW(file.chars.data(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                      FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    DWORD written = 0;
+    const auto size = static_cast<DWORD>(text.size());
+    bool complete =
+        WriteFile(handle, text.data(), size, &written, nullptr) != FALSE && written == size;
+    complete = CloseHandle(handle) != FALSE && complete;
+    return complete;
 }
 
 } // namespace sunrise::core::path

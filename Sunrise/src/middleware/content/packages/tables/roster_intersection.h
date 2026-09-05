@@ -17,10 +17,13 @@ namespace sunrise::middleware::content::packages::tables {
 inline constexpr std::size_t kSliceSetCapacity = 64;
 /**
  * Roster keys tracked for one destination.
- * No installed destination reaches more than 2 objects carrying a wire slot type. This leaves
- * room to spare without a heap allocation.
+ * No installed destination reaches more than 2 objects carrying a wire slot type, but the event
+ * admission below adds the Tower's 112 registry keys on top of that. At the old capacity of 16 the
+ * Tower's walk filled the table, set `overflowed`, and the destination published nothing - not even
+ * its wire keys - which broke every bubble grant: the Bazaar loaded into the void and the next boot
+ * hung on the Tower load screen. Measured on 2026-08-27.
  */
-inline constexpr std::size_t kRosterKeyCapacity = 16;
+inline constexpr std::size_t kRosterKeyCapacity = 32;
 
 static_assert(kSliceSetCapacity * kSliceSetIndexFactor == 512);
 // One bit per slice set, so the mask must cover the whole capacity.
@@ -65,6 +68,60 @@ inline constexpr std::array<std::uint16_t, 9> kRosterSlotTypes = {
  * @return True when it declares a slot of one of the wire types.
  */
 [[nodiscard]] bool carries_roster_slot(std::span<const std::byte> object) noexcept;
+
+/**
+ * Every registry key the Tower's own bubble registries name.
+ * Seasonal content is carried by placed objects that declare no wire slot type, so
+ * `carries_roster_slot` rejects them and they never reach the roster. Admitting them by key is what
+ * puts them back, and the key set has to cover every bubble: the six keys the knowledge graph
+ * records as `event-keys` were attributed by group-testing in the Courtyard, and the Courtyard is
+ * the only place they appear. Walking the Tower's scenario to its per-bubble registries - Annex
+ * 0x80B4AF2D, Bazaar 0x80B4AF3E, Courtyard 0x80B4AF5F, Hangar 0x80B4AF66 - finds 124 keyed objects
+ * carrying these keys, with the Bazaar's 33 and the Hangar's 41 sharing none of the six.
+ *
+ * Listing the Tower's keys explicitly keeps the cost bounded. Dropping the wire-type gate outright
+ * admits every placed object in the install, which saturates the group table and hangs the roster
+ * walk before it finishes - measured twice.
+ */
+// Admitting all 112 keys instead was measured on 2026-08-27: it makes 107 per-bubble groups, most
+// of them always-on scenery, and the switch into other bubbles stops completing. The event subset
+// was separated by package fingerprint: an event object's chain reaches the seasonal packages
+// 0x225/0x228/0x23B, which no plain scenery object does.
+inline constexpr std::array<std::uint32_t, 18> kEventRosterKeys = {
+    0x00ACD208U,   // Dawning (Courtyard)
+    0x27060E6CU,   // Iron Banner (Courtyard)
+    0x4F4ED92FU,   // Annex o_penumbra_vendor slot (Benedict 99-40); not an event, kept for the baseline
+    0x50CC9C7DU,   // Courtyard vendors' squad group; not an event, kept for the baseline
+    0x6CEFCC01U,   // Crimson Days (Courtyard)
+    0x7C6DE64FU,   // Festival of the Lost (Courtyard)
+    0xD5B68262U,   // Solstice (Courtyard)
+    // 0x0AFC31B6, the Guardian Games podium, is deliberately absent: it publishes but its group
+    // placement list is empty in the shipped data, so nothing renders (2026-09-05).
+    // Per-bubble event carriers, found 2026-08-27 by walking each bubble registry's objects to
+    // the seasonal packages (0x225/0x228/0x23B) every Courtyard event group also reaches. Each
+    // bubble keys its own carrier - 0x80B4AF2C/0x80B4AF3D/0x80B4AF5E/0x80B4AF65 sit beside their
+    // bubble's registry tag - which is why the Courtyard keys never lit the other areas.
+    0x6D3740C6U,   // Annex carrier
+    0x2F2B8D00U,   // Bazaar carrier
+    0x08E64D48U,   // Bazaar carrier
+    0xFC6B8707U,   // Bazaar carrier
+    0x099B0342U,   // Hangar carrier
+    0x9052672CU,   // Hangar carrier
+    0xDA989AA3U,   // Hangar carrier: the Dawning rink (ball, goals, scoreboards, confetti)
+    0xEE34BBABU,   // Hangar carrier
+    0x6E087824U,   // Hangar carrier
+    // The Farm (campaign_social_space_d2, one bubble): its Dawning dressing group, d_weather_control
+    // plus a 195-entry placement list of the same package-0x23B entities the Tower's Dawning uses.
+    // Not a wire-slot carrier, so it needs admitting by key like every Tower event (2026-09-05).
+    0xC140FF19U,   // Farm Dawning: weather control + 195 placements
+    0x4488AD94U};  // Farm Crimson Days: heart arch, rose garlands, banners; 64 placements (seen in game 2026-09-05)
+
+/**
+ * Tests whether one registry key names a Tower seasonal event object.
+ * @param registryKey Registry key read from a placed object.
+ * @return True when the key is one of the event keys.
+ */
+[[nodiscard]] bool is_event_roster_key(std::uint32_t registryKey) noexcept;
 
 /**
  * Records a slice set the destination reaches, whether or not it holds a roster object.

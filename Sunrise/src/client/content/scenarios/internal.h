@@ -24,9 +24,16 @@ inline constexpr std::size_t kObjectMemoCapacity = 16'384;
 /** Memo value for an object that declares no roster slot type. */
 inline constexpr std::uint16_t kNotARosterGroup = 0xFFFF;
 
-/** One memo row: a placed-object tag and the roster group it produced. */
+/**
+ * One memo row: a placed-object tag, the roster group it produced, and the registry key it carries.
+ * The key is kept even when the object is not a group of its own. A seasonal event is carried by
+ * one group object but its props are ordinary placed objects sharing that key, and the per-bubble
+ * mask has to cover every bubble holding either - a bubble with the props but not the group object
+ * would otherwise never have the key advertised, so those props are never seeded.
+ */
 struct ObjectMemo {
     std::uint32_t tag{};
+    std::uint32_t registryKey{};
     std::uint16_t group{kNotARosterGroup};
 };
 
@@ -50,6 +57,16 @@ struct RosterStorage {
     /** Descriptors found on the object being resolved, one per slot it can publish. */
     std::array<SlotRecord, layouts::kRosterSlotCapacity> slots{};
     std::size_t slotCount{};
+    /**
+     * Slot flags learned per slot TYPE, across every object the walk has read.
+     * A flag byte is a property of the type, not of one placed instance: the pre-merge build kept
+     * exactly this table and tested it in `carries_wire_slot`. It matters for a slot whose own
+     * descriptor cannot be reached - every Tower event has one - because publishing that slot with
+     * zero flags makes it unseedable, and the client then holds the whole bubble at
+     * `activity:initial_slice_set_loading` step 36 waiting for a record that never arrives.
+     */
+    std::array<std::uint8_t, 256> typeFlags{};
+    std::array<bool, 256> typeFlagsKnown{};
     /** Set when the object declared more descriptors than storage holds, which refuses it. */
     bool slotsOverflowed{};
     /** Group objects whose descriptor walk yielded no publishable slot. */
@@ -183,6 +200,8 @@ void record_slot(RosterStorage& storage,
  * @return True when every declared slot has a descriptor and nothing overflowed.
  */
 [[nodiscard]] bool fill_slots(RosterStorage& storage,
+                              std::span<const std::byte> objectBlob,
+                              const middleware::content::packages::tables::Array& declaredSlots,
                               std::size_t declaredSlotCount,
                               layouts::RosterGroup& group) noexcept;
 
@@ -242,6 +261,15 @@ void publish_groups(Walk& walk, layouts::Definition& row) noexcept;
  * @param group Receives the roster group index, or the not-a-group sentinel.
  * @return True when the object was read or was already known.
  */
+/**
+ * Reports the registry key a placed object carries, from the memo the walk already filled.
+ * @param storage Working storage.
+ * @param objectTag Object tag.
+ * @return The key, or zero when the object is unknown or carries none.
+ */
+[[nodiscard]] std::uint32_t memoised_object_key(const RosterStorage& storage,
+                                                std::uint32_t objectTag) noexcept;
+
 [[nodiscard]] bool resolve_object(const reader::Source& source,
                                   reader::Scratch& scratch,
                                   RosterStorage& storage,

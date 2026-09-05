@@ -1,11 +1,13 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
 #include <string_view>
 
 #include "../../../../../state/account/account_state.h"
 #include "../../../../../state/activity/defaults/activity_defaults_snapshot.h"
 #include "../../../../../state/activity/destination/activity_destination_spawn_binding.h"
+#include "../../../../../state/activity/events/activity_event_selection.h"
 #include "../../../../../state/activity/membership/activity_membership_query.h"
 #include "../../../../../state/activity/runtime.h"
 #include "../../../../../state/build_data/runtime.h"
@@ -35,6 +37,24 @@ constexpr std::uint32_t kFoldPrime = 16777619U;
 constexpr std::uint8_t kSlotTypeParticipation = 13;
 /** The join request names its character in the low half of the SOID, so compare on that half. */
 constexpr std::uint64_t kIdentityLowMask = 0xFFFFFFFFULL;
+/** The type-17 lifetime slot. A group carrying it or a type-13 slot holds the activity state. */
+constexpr std::uint8_t kSlotTypeLifetime = 17;
+
+/**
+ * A group carrying the activity state (a type-13 or type-17 slot) is never withheld whatever the
+ * events selection says: withholding it stalls the boot at step 36, which presents as a hang, not
+ * a bare Tower.
+ * @param group Resolved roster group. @return True when it holds the activity state.
+ */
+[[nodiscard]] bool carries_activity_state(const layouts::RosterGroup& group) noexcept {
+    for (std::size_t slot = 0; slot < group.slotCount; ++slot) {
+        if (group.slotTypes[slot] == kSlotTypeParticipation
+            || group.slotTypes[slot] == kSlotTypeLifetime) {
+            return true;
+        }
+    }
+    return false;
+}
 
 /**
  * Finds the full authored SOID for the character the join request named.
@@ -94,12 +114,13 @@ constexpr std::uint64_t kIdentityLowMask = 0xFFFFFFFFULL;
  * @return The sub-blocks to publish, which is empty when the destination has no per-bubble group.
  */
 [[nodiscard]] std::span<const message::BubbleSubBlock> fill_sub_blocks(
-    const layouts::Definition& layout, Scratch& scratch, const message::Roster& roster) noexcept {
+    std::span<const std::uint64_t> bubbleMasks, Scratch& scratch,
+    const message::Roster& roster) noexcept {
     std::size_t published = 0;
     for (std::size_t bubble = 0; bubble < scratch.rosterSubBlocks.size(); ++bubble) {
         std::size_t keyCount = 0;
-        for (std::size_t index = 0; index < layout.bubbleGroupCount; ++index) {
-            if ((layout.bubbleGroupMasks[index] & (std::uint64_t{1} << bubble)) == 0) {
+        for (std::size_t index = 0; index < bubbleMasks.size(); ++index) {
+            if ((bubbleMasks[index] & (std::uint64_t{1} << bubble)) == 0) {
                 continue;
             }
             scratch.rosterSubBlockKeys[published][keyCount] =
@@ -133,22 +154,54 @@ fill_roster(const layouts::Definition& layout, Scratch& scratch, message::Roster
         || groupCount > roster.groups.size()) {
         return false;
     }
+    // A withheld key can be a top-level group too: on a destination with one slice set every
+    // admitted key is "safe" and lands here rather than in a bubble sub-block (the Farm,
+    // 2026-09-05), so the selection has to be applied to both halves. The survivors are compacted.
+    std::size_t keptTop = 0;
     for (std::size_t index = 0; index < layout.rosterGroupCount; ++index) {
-        if (!fill_group(layout.rosterGroups[index], scratch, index, roster)) {
+        layouts::RosterGroup probe{};
+        if (!state::build_data::find_roster_group(layout.rosterGroups[index], probe)) {
             return false;
         }
+        if (state::activity::events::withheld(probe.registryKey)
+            && !carries_activity_state(probe)) {
+            continue;
+        }
+        if (!fill_group(layout.rosterGroups[index], scratch, keptTop, roster)) {
+            return false;
+        }
+        ++keptTop;
+    }
+    if (keptTop == 0) {
+        return false;
     }
     // The per-bubble groups follow the top-level ones in the same array, because phase 2 seeds
     // every group the body registers and the client holds its apply back until they are all in.
+    //
+    // A withheld group is left out of BOTH halves - the group list and its bubble's sub-block -
+    // and the survivors are compacted so each kept group still lines up with its own mask. A group
+    // registered but named by no sub-block would be one the client waits on and never seeds.
+    // Which keys are withheld is State's: the Tower events selection, which moves only on a join.
+    std::array<std::uint64_t, layouts::kDestinationBubbleGroupCapacity> keptMasks{};
+    std::size_t kept = 0;
     for (std::size_t index = 0; index < layout.bubbleGroupCount; ++index) {
-        if (!fill_group(
-                layout.bubbleGroups[index], scratch, layout.rosterGroupCount + index, roster)) {
+        layouts::RosterGroup probe{};
+        if (!state::build_data::find_roster_group(layout.bubbleGroups[index], probe)) {
             return false;
         }
+        if (state::activity::events::withheld(probe.registryKey)
+            && !carries_activity_state(probe)) {
+            continue;
+        }
+        if (!fill_group(layout.bubbleGroups[index], scratch, keptTop + kept, roster)) {
+            return false;
+        }
+        keptMasks[kept] = layout.bubbleGroupMasks[index];
+        ++kept;
     }
-    roster.topLevelGroupCount = layout.rosterGroupCount;
-    roster.groupCount = groupCount;
-    roster.bubbleSubBlocks = fill_sub_blocks(layout, scratch, roster);
+    roster.topLevelGroupCount = keptTop;
+    roster.groupCount = keptTop + kept;
+    roster.bubbleSubBlocks = fill_sub_blocks(std::span(keptMasks).first(kept), scratch, roster);
     // Only a top-level group can bind the player: its object is in every slice set, so the gate
     // reads it wherever the player is.
     for (std::size_t index = 0; index < roster.topLevelGroupCount && roster.playerKeyGroup == 0;

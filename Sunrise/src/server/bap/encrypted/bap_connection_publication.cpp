@@ -5,6 +5,7 @@
 #include <atomic>
 #include <limits>
 
+#include "../../../state/activity/events/activity_event_selection.h"
 #include "../../../state/activity/runtime.h"
 #include "../../gameplay/group/group_host_sessions.h"
 
@@ -125,6 +126,9 @@ void publish_connection_fields(Session& session,
     if (fields.joinsActivity) {
         session.activityRosterSends = 0;
         session.activityRosterGroups = 0;
+        // That rebuild is also the one safe moment to change which event groups are published,
+        // so the withheld-key file is re-read here and nowhere else.
+        state::activity::events::reload();
     }
 }
 

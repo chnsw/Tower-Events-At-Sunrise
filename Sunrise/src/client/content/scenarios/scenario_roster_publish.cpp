@@ -1,5 +1,9 @@
 #include <algorithm>
+#include <array>
 #include <cstddef>
+#include <cstdio>
+
+#include "../../../core/logging/log.h"
 
 #include "../../../middleware/content/packages/tables/roster_intersection.h"
 #include "internal.h"
@@ -99,6 +103,60 @@ void publish_per_bubble(Walk& walk, layouts::Definition& row) noexcept {
 
 } // namespace
 
+/**
+ * Reports what a destination could publish against what it did.
+ * publish_per_bubble stops at kDestinationBubbleGroupCapacity without saying so, unlike
+ * safe_roster_keys and partial_roster_keys which both fail loudly on overflow. A destination whose
+ * partial count exceeds the capacity silently loses every group past the fourth, and which four
+ * survive depends on candidate order - so an event authored in a late bubble never publishes.
+ */
+void report_publish(const Walk& walk, const layouts::Definition& row,
+                    std::size_t safeCount, std::size_t partialCount) noexcept {
+    const bool truncated = partialCount > layouts::kDestinationBubbleGroupCapacity
+                           || safeCount > layouts::kDestinationGroupCapacity;
+    std::array<char, core::log::kLineCapacity> line{};
+    int at = std::snprintf(line.data(), line.size(),
+                           "ev=roster_publish tag=0x%08X cands=%zu safe=%zu->%u partial=%zu->%u%s",
+                           row.tag, walk.candidateCount,
+                           safeCount, static_cast<unsigned>(row.rosterGroupCount),
+                           partialCount, static_cast<unsigned>(row.bubbleGroupCount),
+                           truncated ? " TRUNCATED" : "");
+    // `at` holds snprintf's would-be length, which passes the capacity once the line fills. The
+    // append below must stop there: continuing computes `line.size() - at` as a wrapped size and
+    // points snprintf past the buffer, which is an out-of-bounds write. At 16 keys no line ever
+    // filled; the first 53-key Tower row crossed the capacity and took the process down mid-walk.
+    const auto fits = [&line](int offset) {
+        return offset > 0 && static_cast<std::size_t>(offset) < line.size();
+    };
+    for (std::size_t index = 0; index < row.bubbleGroupCount && fits(at); ++index) {
+        at += std::snprintf(line.data() + at, line.size() - static_cast<std::size_t>(at),
+                            " m%zu=0x%llX", index,
+                            static_cast<unsigned long long>(row.bubbleGroupMasks[index]));
+    }
+    // The raw intersection. A key is dropped as neither safe nor partial when its mask is zero,
+    // meaning it was never observed in ANY slice set of this destination - which is a different
+    // failure from being observed in only some. Print every key so the two can be told apart.
+    if (fits(at)) {
+        at += std::snprintf(line.data() + at, line.size() - static_cast<std::size_t>(at),
+                            " obs=0x%llX keys=%zu",
+                            static_cast<unsigned long long>(walk.intersection.observedSets),
+                            walk.intersection.keyCount);
+        for (std::size_t index = 0; index < walk.intersection.keyCount && fits(at); ++index) {
+            at += std::snprintf(line.data() + at, line.size() - static_cast<std::size_t>(at),
+                                " k%zu=0x%X/0x%llX", index,
+                                walk.intersection.keys[index],
+                                static_cast<unsigned long long>(walk.intersection.masks[index]));
+        }
+    }
+    if (at > 0) {
+        const std::size_t length =
+            std::min(static_cast<std::size_t>(at), line.size() - 1);
+        core::log::write(core::log::Channel::state,
+                         truncated ? core::log::Level::warn : core::log::Level::debug,
+                         {line.data(), length});
+    }
+}
+
 /** Splits the candidates between the destination row's two lists. */
 void publish_groups(Walk& walk, layouts::Definition& row) noexcept {
     row.rosterGroupCount = 0;
@@ -110,6 +168,16 @@ void publish_groups(Walk& walk, layouts::Definition& row) noexcept {
     // The per-bubble half is independent of the top-level one: its keys register through the
     // delta's own field 1, and a destination may reach one half and not the other.
     publish_per_bubble(walk, row);
+    if (walk.candidateCount != 0) {
+        std::array<std::uint32_t, tables::kRosterKeyCapacity> safe{};
+        std::array<std::uint32_t, tables::kRosterKeyCapacity> pkeys{};
+        std::array<std::uint64_t, tables::kRosterKeyCapacity> pmasks{};
+        std::size_t safeCount = 0;
+        std::size_t partialCount = 0;
+        (void)tables::safe_roster_keys(walk.intersection, safe, safeCount);
+        (void)tables::partial_roster_keys(walk.intersection, pkeys, pmasks, partialCount);
+        report_publish(walk, row, safeCount, partialCount);
+    }
 }
 
 } // namespace sunrise::client::content::scenarios

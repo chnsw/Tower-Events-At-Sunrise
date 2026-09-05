@@ -21,6 +21,8 @@
 #include "internal.h"
 #include "runtime.h"
 
+#include "../network/investment/investment_refetch.h"
+
 namespace sunrise::client::hooks::teleport {
 namespace {
 
@@ -85,6 +87,8 @@ std::int64_t __fastcall camera_transform(std::uint32_t playerIndex) noexcept {
     hooks::fly::poll_toggle();
     client::player::position::poll();
     hooks::bootflow::poll_world_step();
+    // Request updated seasonal unlocks on the game thread after an Events-page change.
+    hooks::network::investment::poll_refetch();
     return result;
 }
 

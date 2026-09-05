@@ -55,4 +55,17 @@ struct Buffer {
  */
 [[nodiscard]] bool read_artifact_text(std::wstring_view relative, std::span<char> text) noexcept;
 
+/**
+ * Writes one Sunrise-owned text file whole, replacing what was there.
+ *
+ * The one writer of an authored rule file is an interface page saving what the operator picked. The
+ * file stays the source of truth, so hand edits and scripts keep working beside the page. Like the
+ * read, the write is whole or refused.
+ *
+ * @param relative File name, resolved the same way `artifact_file` resolves one.
+ * @param text Bytes to write. No terminator is added.
+ * @return True when every byte reached the file.
+ */
+[[nodiscard]] bool write_artifact_text(std::wstring_view relative, std::string_view text) noexcept;
+
 } // namespace sunrise::core::path

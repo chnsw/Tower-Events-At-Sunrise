@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <string_view>
 
 #include "../../../../core/logging/log.h"
@@ -55,11 +56,23 @@ __declspec(noinline) std::int64_t __fastcall commit(void* primaryRecordBlock,
     // Arm on the way out: the overrides are in the object only once the commit has run.
     const std::int64_t result = original(primaryRecordBlock, nested4);
     arm_derived_rebuild();
-    if (!g_reportedArm.exchange(true, std::memory_order_relaxed)) {
+    // Every commit is logged with its ordinal, not only the first: whether a mid-session
+    // investment fetch re-commits the account's unlock overrides is exactly the question the
+    // Tower music work needs answered (2026-09-05).
+    static std::atomic<std::uint32_t> commits{0};
+    const std::uint32_t ordinal = commits.fetch_add(1, std::memory_order_relaxed) + 1;
+    std::array<char, 96> line{};
+    const int written = std::snprintf(line.data(),
+                                      line.size(),
+                                      "ev=investment stage=family5_commit result=armed count=%u rc=%lld",
+                                      ordinal,
+                                      static_cast<long long>(result));
+    if (written > 0) {
         core::log::write(core::log::Channel::client,
                          core::log::Level::info,
-                         "ev=investment stage=family5_commit result=armed");
+                         {line.data(), static_cast<std::size_t>(written)});
     }
+    (void)g_reportedArm.exchange(true, std::memory_order_relaxed);
     return result;
 }
 

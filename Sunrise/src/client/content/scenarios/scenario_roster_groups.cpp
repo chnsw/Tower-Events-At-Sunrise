@@ -1,6 +1,10 @@
 #include "../../../middleware/content/packages/tables/roster_intersection.h"
 #include "../../../middleware/content/packages/tables/scenario_reader.h"
 #include "../../../middleware/content/packages/tables/slot_descriptor_reader.h"
+#include <array>
+#include <cstdio>
+
+#include "../../../core/logging/log.h"
 #include "internal.h"
 
 namespace sunrise::client::content::scenarios {
@@ -40,6 +44,19 @@ void follow_handle(const reader::Source& source,
         std::uint32_t classId = 0;
         ++storage.reads;
         if (!reader::read_tag(source, scratch, tag, storage.chain, classId)) {
+            // Every Tower event group is short by exactly its last slot. Name the handle whose
+            // chain cannot be read, so an absent package can be told from a malformed chain.
+            if (tables::is_event_roster_key(registryKey)) {
+                std::array<char, core::log::kLineCapacity> line{};
+                const int written = std::snprintf(
+                    line.data(), line.size(),
+                    "ev=event_chain key=0x%08X handle=0x%08X tag=0x%08X depth=%zu result=unreadable",
+                    registryKey, handle, tag, depth);
+                if (written > 0) {
+                    core::log::write(core::log::Channel::state, core::log::Level::warn,
+                                     {line.data(), static_cast<std::size_t>(written)});
+                }
+            }
             return;
         }
         if (classId == tables::kPlacedObjectClass) {
@@ -49,6 +66,26 @@ void follow_handle(const reader::Source& source,
         }
         std::uint32_t next = 0;
         if (!tables::next_descriptor_tag(storage.chain, classId, next)) {
+            if (tables::is_event_roster_key(registryKey)) {
+                std::array<char, core::log::kLineCapacity> line{};
+                // 0x80809468 is kSlotIndirectClass and IS handled, so the failure is inside:
+                // the handle array is missing or empty. Report what the blob actually carries.
+                tables::Array indirect{};
+                const bool found = tables::find_array_at(
+                    storage.chain, tables::kSlotIndirectDescriptor, indirect);
+                const int written = std::snprintf(
+                    line.data(), line.size(),
+                    "ev=event_chain key=0x%08X handle=0x%08X tag=0x%08X class=0x%08X depth=%zu "
+                    "result=no_next bytes=%zu array=%u count=%llu off=%llu",
+                    registryKey, handle, tag, classId, depth, storage.chain.size(),
+                    found ? 1U : 0U,
+                    static_cast<unsigned long long>(indirect.count),
+                    static_cast<unsigned long long>(indirect.dataOffset));
+                if (written > 0) {
+                    core::log::write(core::log::Channel::state, core::log::Level::warn,
+                                     {line.data(), static_cast<std::size_t>(written)});
+                }
+            }
             return;
         }
         tag = next;
@@ -112,6 +149,15 @@ void collect_descriptors(const reader::Source& source,
  * @param group Receives the roster group index, or the not-a-group sentinel.
  * @return True when the object was read or was already known.
  */
+std::uint32_t memoised_object_key(const RosterStorage& storage,
+                                  std::uint32_t objectTag) noexcept {
+    const std::size_t slot = memo_slot(storage, objectTag);
+    if (slot == kObjectMemoCapacity || storage.memo[slot].tag != objectTag) {
+        return 0;
+    }
+    return storage.memo[slot].registryKey;
+}
+
 bool resolve_object(const reader::Source& source,
                     reader::Scratch& scratch,
                     RosterStorage& storage,
@@ -128,6 +174,7 @@ bool resolve_object(const reader::Source& source,
     }
     storage.memo[slot].tag = objectTag;
     storage.memo[slot].group = kNotARosterGroup;
+    storage.memo[slot].registryKey = 0;
     ++storage.reads;
     if (!reader::read_tag(source, scratch, objectTag, storage.object)) {
         return true;
@@ -135,8 +182,52 @@ bool resolve_object(const reader::Source& source,
 
     layouts::RosterGroup candidate{};
     tables::Array declared{};
-    if (!tables::object_key(storage.object, candidate.registryKey) || candidate.registryKey == 0
-        || !tables::carries_roster_slot(storage.object)
+    // Does any placed object in this install actually carry a known Tower event registry key?
+    // The six keys were attributed on the pre-merge build; nothing since has observed one. Report
+    // every hit with what it declares, before any admission gate can hide it.
+    {
+        std::uint32_t probeKey = 0;
+        if (tables::object_key(storage.object, probeKey)) {
+            constexpr std::array<std::uint32_t, 7> kEventKeys{
+                0x7C6DE64FU, 0x27060E6CU, 0x6CEFCC01U, 0xD5B68262U,
+                0x00ACD208U, 0x4F4ED92FU, 0x50CC9C7DU};
+            for (const std::uint32_t key : kEventKeys) {
+                if (probeKey != key) {
+                    continue;
+                }
+                tables::Array probeSlots{};
+                const bool hasSlots = tables::object_slots(storage.object, probeSlots);
+                std::array<char, core::log::kLineCapacity> line{};
+                const int written = std::snprintf(
+                    line.data(), line.size(),
+                    "ev=event_key tag=0x%08X key=0x%08X slots=%u wire=%u",
+                    objectTag, probeKey,
+                    hasSlots ? static_cast<unsigned>(probeSlots.count) : 0U,
+                    tables::carries_roster_slot(storage.object) ? 1U : 0U);
+                if (written > 0) {
+                    core::log::write(core::log::Channel::state, core::log::Level::warn,
+                                     {line.data(), static_cast<std::size_t>(written)});
+                }
+                break;
+            }
+        }
+    }
+    // Admission. carries_roster_slot stays the general gate: removing it entirely was measured on
+    // 2026-08-26 and saturates kRosterGroupCapacity (groups=512) before the walk finishes, which
+    // aborts destinations wholesale, so the original comment's warning is correct.
+    //
+    // It is not sufficient on its own. Every Tower seasonal event is carried by one placed object
+    // with its own registry key, and all seven declare real slots (2 to 29) while declaring NO
+    // wire slot type - measured 2026-08-26, wire=0 on every one. So the wire-type gate rejects
+    // every event, which is why the Tower published one group instead of thirty-six and no
+    // per-bubble sub-block at all. Admitting them by key restores the events and costs seven
+    // groups, and makes each event independently selectable through the existing exclude file.
+    if (tables::object_key(storage.object, candidate.registryKey)) {
+        storage.memo[slot].registryKey = candidate.registryKey;
+    }
+    if (candidate.registryKey == 0
+        || !(tables::carries_roster_slot(storage.object)
+             || tables::is_event_roster_key(candidate.registryKey))
         || !tables::object_slots(storage.object, declared) || declared.count == 0
         || declared.count > layouts::kRosterSlotCapacity) {
         return true;
@@ -144,7 +235,35 @@ bool resolve_object(const reader::Source& source,
     storage.slotCount = 0;
     storage.slotsOverflowed = false;
     collect_descriptors(source, scratch, storage, storage.object, candidate.registryKey);
-    if (!fill_slots(storage, declared.count, candidate)) {
+    // Why an event group is dropped: fill_slots demands slotCount == declaredSlotCount exactly,
+    // and record_slot silently skips a descriptor whose type is 0 or above kMaximumSlotType, or
+    // whose index repeats. Report the two counts for the event objects so a resolution failure can
+    // be told from a classification one.
+    if (tables::is_event_roster_key(candidate.registryKey)) {
+        std::array<char, core::log::kLineCapacity> line{};
+        int written = std::snprintf(
+            line.data(), line.size(),
+            "ev=event_fill tag=0x%08X key=0x%08X declared=%u collected=%zu overflow=%u",
+            objectTag, candidate.registryKey, static_cast<unsigned>(declared.count),
+            storage.slotCount, storage.slotsOverflowed ? 1U : 0U);
+        // Which slot indices were actually recorded. Every event group is short by exactly one,
+        // so the gap in this list names the descriptor record_slot refused.
+        for (std::size_t entry = 0; entry < storage.slotCount && written > 0; ++entry) {
+            const int more = std::snprintf(
+                line.data() + written, line.size() - static_cast<std::size_t>(written),
+                " %u/%u", static_cast<unsigned>(storage.slots[entry].index),
+                static_cast<unsigned>(storage.slots[entry].type));
+            if (more <= 0) {
+                break;
+            }
+            written += more;
+        }
+        if (written > 0) {
+            core::log::write(core::log::Channel::state, core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
+    }
+    if (!fill_slots(storage, storage.object, declared, declared.count, candidate)) {
         // The client registers a record per slot the object declares and refuses its whole apply
         // while any record in the current bubble is unseeded, so a group missing one descriptor is
         // dropped rather than published short.
