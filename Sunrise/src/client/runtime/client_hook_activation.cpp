@@ -23,7 +23,6 @@
 #include "../hooks/membership_probe/membership_probe.h"
 #include "../hooks/network/runtime.h"
 #include "../hooks/network/investment/investment_refetch.h"
-#include "../hooks/network/loot_probe.h"
 #include "../hooks/noclip/runtime.h"
 #include "../hooks/package_trust/package_trust_bypass.h"
 #include "../hooks/polled_input/runtime.h"
@@ -177,7 +176,6 @@ void clear_game_targets() noexcept {
     (void)hooks::teleport::install();
     // On-demand family-5 refetch, so a Tower music choice reaches a client already in the world.
     (void)hooks::network::investment::install_refetch();
-    (void)hooks::network::loot_probe::install();  // TEMPORARY: loot pickup path instrumentation
     // Noclip owns its Havok-step target, so a patch-specific miss cannot disable teleport.
     (void)hooks::noclip::install();
     // Attaches whether or not the feature is on, so the interface can enable it without a restart.

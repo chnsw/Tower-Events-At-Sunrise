@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -27,11 +27,22 @@ jobs:
           /p:Platform=x64
           /verbosity:minimal
 
+      - name: Configure regression tests
+        run: cmake -S tests -B build/tests -G "Visual Studio 18 2026" -A x64
+
+      - name: Build regression tests
+        run: cmake --build build/tests --config Release
+
+      - name: Run regression tests
+        run: ctest --test-dir build/tests -C Release --output-on-failure
+
+      - name: Package release
+        run: ./tools/package-release.ps1
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Sunrise-Release-x64
+          name: Tower-Events-At-Sunrise-Release-x64
           path: |
-            build/x64/Release/steam_api64.dll
-            build/x64/Release/steam_api64.pdb
+            build/Tower-Events-At-Sunrise-*-win64.zip
           if-no-files-found: error

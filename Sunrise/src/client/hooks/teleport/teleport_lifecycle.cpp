@@ -21,9 +21,7 @@
 #include "internal.h"
 #include "runtime.h"
 
-#include "../../content/events/event_props.h"
 #include "../network/investment/investment_refetch.h"
-#include "../network/loot_probe.h"
 
 namespace sunrise::client::hooks::teleport {
 namespace {
@@ -89,12 +87,8 @@ std::int64_t __fastcall camera_transform(std::uint32_t playerIndex) noexcept {
     hooks::fly::poll_toggle();
     client::player::position::poll();
     hooks::bootflow::poll_world_step();
-    // Furnishing an area needs the player's current position, so it runs where that position is
-    // refreshed. observe_world_step, where this first sat, barely runs and the placement never got
-    // a chance to see the player standing anywhere.
-    client::content::events::place_event_props();
+    // Request updated seasonal unlocks on the game thread after an Events-page change.
     hooks::network::investment::poll_refetch();
-    hooks::network::loot_probe::poll();
     return result;
 }
 

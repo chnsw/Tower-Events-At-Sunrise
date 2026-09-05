@@ -451,9 +451,7 @@
     <ClCompile Include="src\client\content\hash_names\hash_name_build.cpp" />
     <ClCompile Include="src\client\content\hash_names\hash_name_matcher.cpp" />
     <ClCompile Include="src\client\content\spawn_sets\spawn_set_catalog_builder.cpp" />
-    <ClCompile Include="src\client\content\events\event_props.cpp" />
     <ClCompile Include="src\client\hooks\network\investment\investment_refetch.cpp" />
-    <ClCompile Include="src\client\hooks\network\loot_probe.cpp" />
     <ClCompile Include="src\client\content\scenarios\scenario_roster_build.cpp" />
     <ClCompile Include="src\client\content\scenarios\scenario_roster_groups.cpp" />
     <ClCompile Include="src\client\content\scenarios\scenario_slot_classification.cpp" />

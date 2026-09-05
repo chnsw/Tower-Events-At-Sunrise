@@ -26,15 +26,13 @@ The project owner confirmed the intended server policy:
 All nine sources grant the installed Candy definition (`4084398230`). The server
 looks up the individual authored source identifier; colour alone does not determine
 the amount, and there is no random roll. The incident supplies an authored
-source identity, never a trusted client-supplied item or quantity. Translated Tower
-props retain their source hashes and are supported in the four Festival bubbles.
+source identity, never a trusted client-supplied item or quantity. The four authored Festival bubbles are accepted; rewards resolve by source identity.
 
 Follow-up inspection: all seven 1,760-byte blue entity-data definitions differ only
 in self-reference handles and the hashes at `0x638`/`0x63C`. No payout difference
 was recovered from those definitions. Direct inspection confirmed every payload
 in the 6,416-row reward-mapping and 1,349-row reward-sheet tables is zeroed; the
-1,625-row reward-item-list table has no payload fields. See the maintained manifest
-research, `vault/sunrise/manifest/unlocks-rewards.md`, section 6. Reward amounts
+1,625-row reward-item-list table has no payload fields. Reward amounts
 therefore follow the owner's explicit Courtyard/Bazaar mapping, not an inferred
 quantity field or an external description of another event version.
 
@@ -43,8 +41,7 @@ quantity field or an external description of another event version.
 This is compiled C++ **server behavior** reached through the authenticated BAP
 activity-message route. It uses no gameplay scripts, script VM, position-polling
 grant loop, or client-side inventory mutation. The periodic server connection poll
-only delivers rewards already admitted from a real pickup event. The diagnostic
-client loot probe is not required for this handler and grants nothing.
+only delivers rewards already admitted from a real pickup event. Temporary client loot diagnostics are excluded from the release build.
 
 The implementation is a Festival-specific reconstruction. Observed evidence
 establishes the incoming event, its source identifiers, and successful inventory
@@ -76,9 +73,8 @@ Validation on 2026-09-05:
   new activity generation, and all nine source payouts with duplicate checks.
   Covers Courtyard blue = 50, Bazaar blue = 60, and both purple sources = 250 Candy.
   Uses publication/state stubs.
-- Earlier live test proved incident-to-inventory delivery with the former policy.
-  It does not validate the final Courtyard/Bazaar amounts in game. Those amounts
-  are covered by the updated regression test; a final live check remains separate.
+- The owner confirmed the tested 0.3.2.0 event build works with these final amounts.
+  The release keeps that server reward implementation.
 
 Scope: this handles the authored Festival Tower bundles. It does not implement
 general enemy loot or opcode 601. Claim history is process-local, and inventory
