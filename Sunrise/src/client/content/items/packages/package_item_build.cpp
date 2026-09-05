@@ -1,9 +1,12 @@
 #include <Windows.h>
 
 #include <array>
+#include <cstdio>
+#include <span>
 
 #include "../../../../core/filesystem/path.h"
 #include "../../../../core/logging/log.h"
+#include "../../../../core/settings/rule_text.h"
 #include "../../../../middleware/content/packages/reader/reader.h"
 #include "../../../../middleware/content/packages/tables/definition_index_table.h"
 #include "../../../../middleware/content/packages/tables/items.h"
@@ -14,6 +17,7 @@
 #include "../../../../state/build_data/progressions/definition.h"
 #include "../../../../state/build_data/runtime.h"
 #include "../../../../state/build_data/socket_entry_lists/definition.h"
+#include "../../../../state/build_data/vendors/vendor_catalog.h"
 #include "../../../../state/content/content_catalog.h"
 #include "../../../../state/runtime/runtime.h"
 #include "../../../memory/current_process_memory.h"
@@ -21,11 +25,143 @@
 #include "../../hash_names/hash_name_build.h"
 #include "../../scenarios/scenario_build.h"
 #include "../../spawn_sets/spawn_set_build.h"
+#include "../../vendors/vendor_build.h"
 #include "build.h"
 #include "internal.h"
 
 namespace sunrise::client::content::items::packages {
 namespace {
+
+/**
+ * Reads the vendors to publish definitions for, by definition hash, from `vendor_catalog.txt`.
+ *
+ * A row position is not a stable name for a vendor and the useful ones are not all at the head of
+ * the index, so the list is authored by hash. An absent or empty file leaves the caller with the
+ * leading window it used before.
+ *
+ * @param hashes Receives the requested definition hashes.
+ * @return How many were read.
+ */
+[[nodiscard]] std::size_t read_vendor_hashes(std::span<std::uint32_t> hashes) noexcept {
+    static std::array<char, core::rule_text::kRuleTextCapacity> text{};
+    if (!core::path::read_artifact_text(L"vendor_catalog.txt", text)) {
+        return 0;
+    }
+    std::size_t count = 0;
+    core::rule_text::Cursor rules{text.data()};
+    while (count < hashes.size() && rules.seek_field()) {
+        const std::uint32_t parsed = rules.read_hex();
+        if (parsed != 0) {
+            hashes[count++] = parsed;
+        }
+    }
+    return count;
+}
+
+/**
+ * Publishes the vendor catalog, index and definitions both.
+ *
+ * `vendors::build` always reads the whole index but reads a definition only for a hash it is asked
+ * for, because each is over 100 KiB. The hashes only exist once the index is read, so this runs it
+ * twice: once to learn them, then again to read every definition the index names. Without the
+ * second pass a vendor purchase resolves its index row and then finds no definition behind it.
+ *
+ * @param source Package directory and borrowed block keys.
+ * @param scratch Block storage shared with the other content passes.
+ */
+void build_vendor_catalog(const reader::Source& source, reader::Scratch& scratch) noexcept {
+    namespace vendor_domain = state::build_data::vendors;
+    if (state::build_data::vendor_catalog_ready()) {
+        return;
+    }
+    if (!content::vendors::build(source, scratch, {})) {
+        return;
+    }
+    static std::array<vendor_domain::IndexEntry, vendor_domain::kIndexCapacity> index{};
+    std::size_t count = 0;
+    if (!vendor_domain::snapshot_index(index, count) || count == 0) {
+        return;
+    }
+    // Which vendors get their definitions read, because each is over 100 KiB and the definition
+    // and sale-row banks hold nowhere near all 511. A definition that no longer fits is skipped
+    // by the pass, and the walk is in index order - so past the banks' capacity it is the
+    // highest-index vendors that drop, whichever list put them there.
+    //
+    // The leading window is the fallback, not the rule: it assumed the Tower's vendors sit low in
+    // the index, and they do not - the Drifter is row 195, so every request against him failed to
+    // resolve a definition that had never been read. `vendor_catalog.txt` names the vendors to
+    // read by definition hash, which is stable where a row position is not.
+    static std::array<std::uint32_t, vendor_domain::kDefinitionCapacity> hashes{};
+    std::size_t wanted = 0;
+    static std::array<std::uint32_t, vendor_domain::kDefinitionCapacity> named{};
+    const std::size_t namedCount = read_vendor_hashes(named);
+    for (std::size_t at = 0; at < namedCount && wanted < hashes.size(); ++at) {
+        bool present = false;
+        for (std::size_t held = 0; held < wanted && !present; ++held) {
+            present = hashes[held] == named[at];
+        }
+        if (present) {
+            // A hash named twice would otherwise spend two of the few definition slots on one
+            // vendor, and quietly cost whichever vendor no longer fits.
+            continue;
+        }
+        bool installed = false;
+        for (std::size_t row = 0; row < count && !installed; ++row) {
+            installed = index[row].definitionHash == named[at];
+        }
+        if (installed) {
+            hashes[wanted++] = named[at];
+            continue;
+        }
+        // A named hash the index does not carry is a mistyped rule, and dropping it silently
+        // reads exactly like the vendor resolving - until a request against it fails with no
+        // line to say the catalog never held it.
+        std::array<char, core::log::kLineCapacity> missing{};
+        const int written = std::snprintf(missing.data(),
+                                          missing.size(),
+                                          "ev=vendor stage=catalog result=skip reason=unknown_hash "
+                                          "hash=0x%08X",
+                                          named[at]);
+        if (written > 0) {
+            core::log::write(core::log::Channel::state,
+                             core::log::Level::warn,
+                             {missing.data(), static_cast<std::size_t>(written)});
+        }
+    }
+    // Fill any remaining room from the head of the index, skipping what is already named, so a
+    // short list still gets the vendors the window would have covered.
+    for (std::size_t row = 0; row < count && wanted < hashes.size(); ++row) {
+        bool present = false;
+        for (std::size_t at = 0; at < wanted && !present; ++at) {
+            present = hashes[at] == index[row].definitionHash;
+        }
+        if (!present) {
+            hashes[wanted++] = index[row].definitionHash;
+        }
+    }
+    // The first pass published an index with no definitions behind it, so it has to be dropped
+    // before the second pass will run at all. The second pass skips a definition it cannot read
+    // or fit rather than failing whole, so what it publishes is every requested vendor that fits
+    // - but a pass that fails outright still leaves every vendor unresolvable, so its outcome is
+    // reported rather than discarded.
+    vendor_domain::clear();
+    const bool published =
+        content::vendors::build(source, scratch, std::span(hashes).first(wanted));
+    std::array<char, core::log::kLineCapacity> line{};
+    const int used = std::snprintf(line.data(),
+                                   line.size(),
+                                   "ev=vendor stage=catalog result=%s named=%zu requested=%zu "
+                                   "index_rows=%zu",
+                                   published ? "ok" : "fail",
+                                   namedCount,
+                                   wanted,
+                                   count);
+    if (used > 0) {
+        core::log::write(core::log::Channel::state,
+                         published ? core::log::Level::info : core::log::Level::warn,
+                         {line.data(), static_cast<std::size_t>(used)});
+    }
+}
 
 /** @return True when every domain owned by the package pass is published. */
 [[nodiscard]] bool package_domains_ready() noexcept {
@@ -63,9 +199,6 @@ namespace {
 
 /** Publishes the dense item table from the installed packages, once. */
 bool build() noexcept {
-    if (package_domains_ready()) {
-        return true;
-    }
     static Storage storage{};
     reader::BlockKeys keys{};
     core::path::Buffer directory{};
@@ -87,6 +220,11 @@ bool build() noexcept {
         (void)content::scenarios::build(packageSource, storage.scratch);
         (void)content::spawn_sets::build(packageSource, storage.scratch);
         (void)content::hash_names::build(packageSource, storage.scratch);
+        build_vendor_catalog(packageSource, storage.scratch);
+        if (package_domains_ready()) {
+            SecureZeroMemory(&keys, sizeof keys);
+            return true;
+        }
     }
     if (root_domains_ready()) {
         SecureZeroMemory(&keys, sizeof keys);

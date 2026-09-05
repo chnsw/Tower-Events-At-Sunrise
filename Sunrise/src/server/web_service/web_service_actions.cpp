@@ -1,11 +1,18 @@
 #include "web_service_actions.h"
 
+#include <Windows.h>
+
 #include <array>
 #include <cstdio>
 #include <limits>
+#include <optional>
+#include <span>
 #include <string_view>
 
+#include "../../client/hooks/vendor_banner/vendor_banner_retire.h"
+#include "../../core/filesystem/path.h"
 #include "../../core/logging/log.h"
+#include "../../core/settings/rule_text.h"
 #include "../../middleware/web_service/messages/opcode1820.h"
 #include "../../middleware/web_service/messages/opcode1901.h"
 #include "../../middleware/web_service/messages/opcode402.h"
@@ -13,9 +20,14 @@
 #include "../../middleware/web_service/messages/opcode406.h"
 #include "../../middleware/web_service/messages/opcode504.h"
 #include "../../middleware/web_service/messages/opcode801.h"
+#include "../../middleware/web_service/messages/opcode901/opcode901_codec.h"
 #include "../../middleware/web_service/messages/opcode903.h"
+#include "../../middleware/web_service/messages/opcode904/opcode904_codec.h"
 #include "../../state/account/account_state.h"
+#include "../../state/account/pursuit_hold.h"
+#include "../../state/build_data/items/item_catalog.h"
 #include "../../state/build_data/runtime.h"
+#include "../../state/build_data/vendors/vendor_catalog.h"
 #include "../../state/runtime/runtime.h"
 
 namespace sunrise::server::web_service {
@@ -26,6 +38,15 @@ namespace {
 constexpr std::uint8_t kEquippedShaderModelSocketKind = 0;
 /** Index stored when no definition resolves. The catalog is u16-indexed, so this cannot be one. */
 constexpr std::uint32_t kUnavailableDefinitionIndex = (std::numeric_limits<std::uint16_t>::max)();
+/** Repeatable bounties a character may hold from one vendor at once, as retail allows. */
+constexpr std::uint32_t kRepeatableHoldLimit = 5;
+/** Authored repeatable pool ceiling. The largest set in the manifest is Eva's Dawning, at 22. */
+constexpr std::size_t kRepeatablePoolCapacity = 64;
+/** Stacks one exchange row may credit. Shader recycling pays two: Glimmer and Legendary Shards. */
+constexpr std::size_t kExchangePayoutCapacity = 4;
+// Every credited stack is announced to the account's change ring, so a rule that named more
+// payouts than the mutation can announce would pay out silently. Raising one raises the other.
+static_assert(kExchangePayoutCapacity <= state::kProfileStackChangeCapacity);
 
 } // namespace
 
@@ -697,6 +718,522 @@ void report_item_acquisition(const middleware::web_service::Message& message,
     }
 }
 
+/**
+ * Writes one purchase line.
+ *
+ * The opcode is carried rather than hard-coded: 901 and 904 share this line, and a quest acquire
+ * reporting itself as `ws901` sends anyone reading the log to the wrong decoder.
+ *
+ * @param opcode Request opcode the line belongs to, 901 or 904.
+ * @param result `ok` or `fail`.
+ * @param reason Step that decided it.
+ * @param vendorIndex Vendor row the request named.
+ * @param saleIndex Sale row the request named.
+ * @param itemDefinitionIndex Item resolved, when the row resolved.
+ */
+void report_purchase(std::uint16_t opcode,
+                     const char* result,
+                     const char* reason,
+                     std::int32_t vendorIndex,
+                     std::int32_t saleIndex,
+                     std::uint16_t itemDefinitionIndex) noexcept {
+    std::array<char, 192> line{};
+    const int count = std::snprintf(line.data(),
+                                    line.size(),
+                                    "ev=ws%u stage=purchase result=%s reason=%s vendor=%d "
+                                    "sale=%d item=%u",
+                                    static_cast<unsigned>(opcode),
+                                    result,
+                                    reason,
+                                    static_cast<int>(vendorIndex),
+                                    static_cast<int>(saleIndex),
+                                    static_cast<unsigned>(itemDefinitionIndex));
+    if (count > 0) {
+        core::log::write(core::log::Channel::server,
+                         std::strcmp(result, "ok") == 0 ? core::log::Level::info
+                                                        : core::log::Level::warn,
+                         {line.data(), static_cast<std::size_t>(count)});
+    }
+}
+
+/** What a substitution rule said about one sale row's item. */
+enum class Substitution : std::uint8_t {
+    /** No rule names this item; the row grants what it names. */
+    none,
+    /** A rule names it and its replacement resolved; the row grants the replacement. */
+    replaced,
+    /** A rule names it but its replacement is not in this build; the row must grant nothing. */
+    broken,
+};
+
+/**
+ * Answers what a placeholder sale row is really selling.
+ *
+ * Several vendor rows name an item of DestinyItemType 20 - a Dummy, a UI placeholder rather than a
+ * grantable item - because buying the row is meant to hand over something the row does not name.
+ * Amanda Holliday's Legacy Content rows are the clearest case: "Legacy: The Red War" is a dummy in
+ * the Quests bucket standing for the campaign's first quest step, Homecoming. Granting the dummy
+ * puts a placeholder in the player's Quests that the client will not draw, and the row never
+ * settles because the player never receives what it was offering.
+ *
+ * Configured by `vendor_item_substitute.txt`, one rule per line:
+ * `<soldHash> <grantHash>`, both in hex. A rule is keyed by the item a row names, not by the
+ * vendor or the row, so a placeholder
+ * sold by more than one vendor needs one rule rather than one per seller.
+ *
+ * A rule whose replacement is absent from this build answers `broken` rather than `none`, because
+ * the rule proves the row's own item is a placeholder - falling back to granting it would be the
+ * exact wrong grant this file exists to prevent, and a wrong grant that commits cleanly is harder
+ * to spot than a refusal. The refusal is logged with both hashes so the rule can be fixed.
+ *
+ * @param itemDefinitionIndex Item the row resolved to.
+ * @param substituteIndex Receives what should be granted in its place.
+ * @return What the rule file said about this item.
+ */
+[[nodiscard]] Substitution substitute_for_item(std::uint16_t itemDefinitionIndex,
+                                               std::uint16_t& substituteIndex) noexcept {
+    substituteIndex = kUnavailableDefinitionIndex;
+    state::build_data::items::Definition sold{};
+    if (!state::build_data::find_item_definition_index(itemDefinitionIndex, sold)) {
+        return Substitution::none;
+    }
+    static std::array<char, core::rule_text::kRuleTextCapacity> text{};
+    if (!core::path::read_artifact_text(L"vendor_item_substitute.txt", text)) {
+        return Substitution::none;
+    }
+    core::rule_text::Cursor rules{text.data()};
+    while (rules.seek_field()) {
+        const std::uint32_t soldHash = rules.read_hex();
+        const std::uint32_t grantHash = rules.read_hex();
+        if (soldHash != sold.definitionHash) {
+            continue;
+        }
+        state::build_data::items::Definition replacement{};
+        const bool resolved =
+            state::build_data::find_item_definition_hash(grantHash, replacement);
+        if (resolved) {
+            substituteIndex = replacement.definitionIndex;
+        }
+        std::array<char, core::log::kLineCapacity> line{};
+        const int used =
+            resolved ? std::snprintf(line.data(), line.size(),
+                                     "ev=vendor stage=substitute sold=0x%08X granted=0x%08X "
+                                     "item=%u",
+                                     sold.definitionHash, replacement.definitionHash,
+                                     static_cast<unsigned>(replacement.definitionIndex))
+                     : std::snprintf(line.data(), line.size(),
+                                     "ev=vendor stage=substitute result=fail reason=missing "
+                                     "sold=0x%08X named=0x%08X",
+                                     sold.definitionHash, grantHash);
+        if (used > 0) {
+            core::log::write(core::log::Channel::server,
+                             resolved ? core::log::Level::info : core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(used)});
+        }
+        return resolved ? Substitution::replaced : Substitution::broken;
+    }
+    return Substitution::none;
+}
+
+/**
+ * Rolls one random unheld repeatable bounty, for a row that offers "additional bounties".
+ *
+ * That row sells a Dummy placeholder - granting it is what put an "Additional Bounties" item in
+ * the inventory, and because the placeholder sits in the Quests bucket the client then treated the
+ * row as owned and stopped offering it. The row is meant to hand out a real bounty, repeatably.
+ *
+ * What it owes is a REPEATABLE bounty, which is a distinct kind: the row costs 3000 glimmer where
+ * the same vendor's daily costs 250, and a character may hold five of them at once.
+ *
+ * The pool has to be authored by hash, because a repeatable bounty is not a sale row. No vendor in
+ * the manifest lists one - they exist only as item definitions - so there is nothing to discover on
+ * the vendor and nothing a category could name. That is also why picking from the vendor's own
+ * rows, however well it reads, could never produce the right item: it can only ever return
+ * something the vendor sells, and the vendor does not sell these.
+ *
+ * Rules are keyed by the vendor's definition hash rather than its row: the row is a position in
+ * this build's package table, while the hash is the vendor's own identity, so a rule can be
+ * authored for any vendor without anyone having to discover its index first. The trigger category
+ * is part of the key, because one vendor can own several such rows - Eva Levante has four, one per
+ * event, each owing that event's own pool.
+ *
+ * Configured by `vendor_bounty_roll.txt`:
+ * `<vendorDefinitionHash> <triggerCategory> <repeatableItemHash>...`, hashes in hex and the trigger
+ * in decimal. A key may span several lines and they accumulate, so a long pool stays readable.
+ *
+ * An authored hash that this build does not carry is skipped rather than refused, so a pool taken
+ * from a newer manifest degrades to the items that do exist instead of failing whole.
+ *
+ * @param vendorIndex Vendor the purchase names.
+ * @param categoryIndex Category of the purchased row, from sale row +100.
+ * @param rolledItemIndex Receives the bounty to grant.
+ * @return True when this row is a bounty roll and its own item must NOT be granted.
+ */
+[[nodiscard]] bool roll_vendor_bounty(std::int32_t vendorIndex,
+                                      std::int32_t categoryIndex,
+                                      std::uint16_t& rolledItemIndex) noexcept {
+    namespace vendor_domain = state::build_data::vendors;
+    rolledItemIndex = kUnavailableDefinitionIndex;
+    if (vendorIndex < 0 || categoryIndex < 0) {
+        return false;
+    }
+    vendor_domain::IndexEntry entry{};
+    if (!vendor_domain::find_index(static_cast<std::uint16_t>(vendorIndex), entry)) {
+        return false;
+    }
+    static std::array<char, core::rule_text::kRuleTextCapacity> text{};
+    if (!core::path::read_artifact_text(L"vendor_bounty_roll.txt", text)) {
+        return false;
+    }
+    // Every hash authored for this exact key. Lines carrying the same key accumulate, so the pool
+    // is gathered from the whole file rather than from the first line that matches.
+    std::array<std::uint32_t, kRepeatablePoolCapacity> pool{};
+    std::size_t poolCount = 0;
+    core::rule_text::Cursor rules{text.data()};
+    while (rules.seek_field()) {
+        const std::uint32_t ruleHash = rules.read_hex();
+        const std::int32_t ruleCategory = rules.read_decimal();
+        const bool wanted = ruleHash == entry.definitionHash && ruleCategory == categoryIndex;
+        // The rest of the line is item hashes. A newline is not a rule field, so this stops at the
+        // end of the line without needing to look for one.
+        while (rules.at_field()) {
+            const std::uint32_t itemHash = rules.read_hex();
+            if (wanted && poolCount < pool.size()) {
+                pool[poolCount++] = itemHash;
+            }
+        }
+    }
+    if (poolCount == 0) {
+        return false;
+    }
+    // Reservoir pick over what this build actually carries and the character does not already hold,
+    // so the pool is walked once and no count is needed up front.
+    std::uint32_t resolved = 0;
+    std::uint32_t held = 0;
+    std::uint32_t candidates = 0;
+    std::uint64_t seed = GetTickCount64();
+    // One account view for the whole pool. Reading it copies the whole account, and the pool is
+    // walked candidate by candidate, so taking it per candidate would copy it dozens of times to
+    // answer dozens of questions about the same unchanging view.
+    const state::AccountState account = state::account_snapshot();
+    for (std::size_t at = 0; at < poolCount; ++at) {
+        state::build_data::items::Definition item{};
+        if (!state::build_data::items::find_hash(pool[at], item)) {
+            continue;
+        }
+        ++resolved;
+        if (state::account::holds_pursuit(account, item.definitionIndex)) {
+            ++held;
+            continue;
+        }
+        ++candidates;
+        seed = (seed * 6364136223846793005ULL) + 1442695040888963407ULL;
+        if ((seed >> 33) % candidates == 0) {
+            rolledItemIndex = item.definitionIndex;
+        }
+    }
+    // Retail lets a character keep five of a vendor's repeatables at once. Refusing here rather
+    // than at the grant keeps the roll from consuming a pick it would only have to throw away.
+    if (held >= kRepeatableHoldLimit) {
+        rolledItemIndex = kUnavailableDefinitionIndex;
+    }
+    std::array<char, core::log::kLineCapacity> line{};
+    const int used = std::snprintf(line.data(), line.size(),
+                                   "ev=bounty_roll stage=pick vendor=%d hash=0x%08X category=%d "
+                                   "authored=%u resolved=%u held=%u pool=%u item=%d",
+                                   vendorIndex, entry.definitionHash, categoryIndex,
+                                   static_cast<unsigned>(poolCount), resolved, held, candidates,
+                                   rolledItemIndex == kUnavailableDefinitionIndex
+                                       ? -1
+                                       : static_cast<int>(rolledItemIndex));
+    if (used > 0) {
+        core::log::write(core::log::Channel::server, core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(used)});
+    }
+    return true;
+}
+
+/**
+ * Runs a vendor's recycle row: charges the stack it names and credits what it pays out.
+ *
+ * A recycle row sells a Dummy placeholder, and the exchange is the
+ * whole point of clicking it. The Drifter's four Synth Recycling rows take five synths each; Master
+ * Rahool's Recycle Shaders category has one row per shader, 277 of them, each taking five of that
+ * shader.
+ *
+ * The cost has to be authored rather than read off the row. The sale row's own cost-bearing fields
+ * are still role-open - the domain header warns against naming one a cost without its mutation
+ * reader - so nothing on this build can say which item a row charges. The manifest can, and a row's
+ * position in it is exactly the row index this build reports: 304 rows checked against Lord Shaxx,
+ * every category in the same order, no mismatch.
+ *
+ * Configured by `vendor_exchange.txt`, one rule per line:
+ * `<vendorDefinitionHash> <rowIndex> <costItemHash> <costQuantity>` then one
+ * `<payoutItemHash> <payoutQuantity>` pair for each stack the row pays into.
+ * Hashes are hex and quantities decimal, alternating, and a rule may name several payouts.
+ *
+ * @param vendorIndex Vendor the purchase names.
+ * @param rowIndex Sale row the purchase names.
+ * @return True when this row was an exchange and its own item must NOT be granted.
+ */
+[[nodiscard]] bool
+exchange_vendor_row(std::int32_t vendorIndex,
+                    std::int32_t rowIndex,
+                    state::PendingProfileItemAcquisition& mutation) noexcept {
+    namespace vendor_domain = state::build_data::vendors;
+    if (vendorIndex < 0 || rowIndex < 0) {
+        return false;
+    }
+    vendor_domain::IndexEntry entry{};
+    if (!vendor_domain::find_index(static_cast<std::uint16_t>(vendorIndex), entry)) {
+        return false;
+    }
+    static std::array<char, core::rule_text::kRuleTextCapacity> text{};
+    if (!core::path::read_artifact_text(L"vendor_exchange.txt", text)) {
+        return false;
+    }
+    std::uint32_t costHash = 0;
+    std::int32_t costQuantity = 0;
+    std::array<state::ProfileExchangePayout, kExchangePayoutCapacity> payouts{};
+    std::size_t payoutCount = 0;
+    bool matched = false;
+    bool overflowed = false;
+    core::rule_text::Cursor rules{text.data()};
+    while (!matched && rules.seek_field()) {
+        const std::uint32_t ruleVendor = rules.read_hex();
+        const std::int32_t ruleRow = rules.read_decimal();
+        const std::uint32_t ruleCost = rules.read_hex();
+        const std::int32_t ruleCostQuantity = rules.read_decimal();
+        // The rest of the line is payout pairs, and every one of them is consumed even past what
+        // can be held. Stopping mid-line would leave the fields that did not fit to be read as the
+        // start of the next rule, turning one over-long rule into a second, invented one.
+        std::array<state::ProfileExchangePayout, kExchangePayoutCapacity> rulePayouts{};
+        std::size_t rulePayoutCount = 0;
+        bool ruleOverflowed = false;
+        while (rules.at_field()) {
+            const std::uint32_t payoutHash = rules.read_hex();
+            const std::int32_t payoutQuantity = rules.read_decimal();
+            if (rulePayoutCount < rulePayouts.size()) {
+                rulePayouts[rulePayoutCount++] = {payoutHash, payoutQuantity};
+            } else {
+                ruleOverflowed = true;
+            }
+        }
+        matched = ruleVendor == entry.definitionHash && ruleRow == rowIndex;
+        if (matched) {
+            overflowed = ruleOverflowed;
+            costHash = ruleCost;
+            costQuantity = ruleCostQuantity;
+            payouts = rulePayouts;
+            payoutCount = rulePayoutCount;
+        }
+    }
+    if (!matched) {
+        return false;
+    }
+    // A matched rule owns the row whatever else it got wrong, because the rule proves the row's
+    // own item is a placeholder and falling through would grant it. A rule naming more payouts
+    // than the change ring can announce, or none at all, is refused whole rather than paid in
+    // part - and the refusal is logged, because a rule that silently does nothing reads exactly
+    // like a rule that was never written.
+    if (overflowed || payoutCount == 0) {
+        std::array<char, core::log::kLineCapacity> refusal{};
+        const int written = std::snprintf(
+            refusal.data(), refusal.size(),
+            "ev=vendor_exchange stage=apply result=fail reason=%s vendor=%d hash=0x%08X row=%d "
+            "payouts=%zu limit=%zu",
+            overflowed ? "payout_overflow" : "payout_missing", vendorIndex, entry.definitionHash,
+            rowIndex, payoutCount, kExchangePayoutCapacity);
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             {refusal.data(), static_cast<std::size_t>(written)});
+        }
+        return true;
+    }
+    const bool applied = state::prepare_vendor_exchange(
+        costHash, costQuantity,
+        std::span<const state::ProfileExchangePayout>{payouts.data(), payoutCount}, mutation);
+    std::array<char, core::log::kLineCapacity> line{};
+    const int used = std::snprintf(
+        line.data(), line.size(),
+        "ev=vendor_exchange stage=apply result=%s vendor=%d hash=0x%08X row=%d cost=0x%08X "
+        "quantity=%d payouts=%zu",
+        applied ? "ok" : "fail", vendorIndex, entry.definitionHash, rowIndex, costHash,
+        costQuantity, payoutCount);
+    if (used > 0) {
+        core::log::write(core::log::Channel::server,
+                         applied ? core::log::Level::info : core::log::Level::warn,
+                         {line.data(), static_cast<std::size_t>(used)});
+    }
+    // Even a refused exchange owns the row. Falling through would grant the Dummy placeholder,
+    // which is the failure this whole path exists to avoid.
+    return true;
+}
+
+/** How one grant ended, so a caller can tell a settled row from a row still owed its item. */
+enum class GrantResult : std::uint8_t {
+    /** The item is prepared for the inventory; the row's offer is answered. */
+    granted,
+    /** The character already holds this pursuit, so the offer was answered some time ago. */
+    alreadyHeld,
+    /** Nothing was granted and nothing was held; the offer still stands. */
+    refused,
+};
+
+/**
+ * Grants one item, given the collectible that owns it and its definition index.
+ *
+ * Split out of `acquire_item` so a vendor purchase reaches the same grant instead of growing a
+ * second acquisition path. The acquisition state is keyed by collectible, so a caller has to arrive
+ * with one; `find_collectible_for_item` is how a purchase gets there.
+ *
+ * @param message Request being answered, for the log line.
+ * @param collectibleIndex Collectible that owns the item.
+ * @param itemDefinitionIndex Item to grant.
+ * @param outcome Receives the prepared mutation on success.
+ * @return How the grant ended, which is what decides whether the row's offer was answered.
+ */
+GrantResult grant_item_definition(const middleware::web_service::Message& message,
+                                  std::uint16_t collectibleIndex,
+                                  std::uint16_t itemDefinitionIndex,
+                                  Outcome& outcome) noexcept {
+    state::build_data::items::Definition definition{};
+    if (!state::build_data::find_item_definition_index(itemDefinitionIndex, definition)) {
+        report_item_acquisition(
+            message, "fail", "item_definition", collectibleIndex, itemDefinitionIndex, 0, 0);
+        return GrantResult::refused;
+    }
+    // The same rule the client's native vendor-row gate applies locally, so a row that is still
+    // offered can never be one this grant would refuse.
+    if (state::account::holds_pursuit(itemDefinitionIndex)) {
+        report_item_acquisition(message,
+                                "fail",
+                                "already_held",
+                                collectibleIndex,
+                                itemDefinitionIndex,
+                                definition.definitionHash,
+                                0);
+        return GrantResult::alreadyHeld;
+    }
+
+    state::build_data::items::details::Definition detail{};
+    state::build_data::inventory::buckets::Descriptor bucket{};
+    if (!state::build_data::find_configured_item_detail(itemDefinitionIndex, detail)
+        || detail.definitionIndex != itemDefinitionIndex
+        || detail.definitionHash != definition.definitionHash
+        || detail.bucketId != definition.bucketId
+        || !state::build_data::find_inventory_bucket_descriptor(detail.bucketId, bucket)) {
+        report_item_acquisition(message,
+                                "fail",
+                                "item_detail_or_bucket",
+                                collectibleIndex,
+                                itemDefinitionIndex,
+                                definition.definitionHash,
+                                0);
+        return GrantResult::refused;
+    }
+
+    namespace bucket_domain = state::build_data::inventory::buckets;
+    namespace detail_domain = state::build_data::items::details;
+    if (bucket.arraySelector == bucket_domain::ArraySelector::profile) {
+        if (detail.instancedDefinitionState != detail_domain::InstancedDefinitionState::stackable) {
+            report_item_acquisition(message,
+                                    "fail",
+                                    "profile_item_instanced",
+                                    collectibleIndex,
+                                    itemDefinitionIndex,
+                                    definition.definitionHash,
+                                    0);
+            return GrantResult::refused;
+        }
+        state::PendingProfileItemAcquisition mutation{};
+        if (!state::prepare_profile_item_acquisition(
+                collectibleIndex, definition.definitionHash, mutation)) {
+            report_item_acquisition(message,
+                                    "fail",
+                                    "profile_state",
+                                    collectibleIndex,
+                                    itemDefinitionIndex,
+                                    definition.definitionHash,
+                                    0);
+            return GrantResult::refused;
+        }
+        outcome.mutation = mutation;
+        report_item_acquisition(message,
+                                "ok",
+                                "profile_ready",
+                                collectibleIndex,
+                                itemDefinitionIndex,
+                                definition.definitionHash,
+                                0);
+        return GrantResult::granted;
+    }
+    if (bucket.arraySelector != bucket_domain::ArraySelector::character) {
+        report_item_acquisition(message,
+                                "fail",
+                                "unsupported_inventory_array",
+                                collectibleIndex,
+                                itemDefinitionIndex,
+                                definition.definitionHash,
+                                0);
+        return GrantResult::refused;
+    }
+
+    state::PendingItemAcquisition mutation{};
+    if (!state::prepare_item_acquisition(collectibleIndex, definition.definitionHash, mutation)) {
+        report_item_acquisition(message,
+                                "fail",
+                                "state",
+                                collectibleIndex,
+                                itemDefinitionIndex,
+                                definition.definitionHash,
+                                0);
+        return GrantResult::refused;
+    }
+    outcome.mutation = mutation;
+    report_item_acquisition(message,
+                            "ok",
+                            "ready",
+                            collectibleIndex,
+                            itemDefinitionIndex,
+                            definition.definitionHash,
+                            mutation.acquiredInstanceSoid);
+    return GrantResult::granted;
+}
+
+/**
+ * Finds the collectible that owns one item definition.
+ *
+ * A vendor sale row names an item, never a collectible, while the acquisition state is keyed by
+ * collectible - so a purchase has to find one, or say plainly that there is none.
+ *
+ * Plenty of what a vendor sells has none at all: bounties, tokens and quest steps are in no
+ * collection. Those are granted by hash instead, under `kNoCollectibleIndex`, which is why a caller
+ * passes that sentinel on rather than inventing a key or refusing the grant.
+ *
+ * @param itemDefinitionIndex Item to look up.
+ * @param collectibleIndex Receives the owning collectible row, and is left untouched when none
+ *        does, so a caller that seeded it with `kNoCollectibleIndex` still holds that sentinel.
+ * @return True when a collectible names this item.
+ */
+[[nodiscard]] bool find_collectible_for_item(std::uint16_t itemDefinitionIndex,
+                                             std::uint16_t& collectibleIndex) noexcept {
+    namespace collectibles = state::build_data::collectibles;
+    static std::array<collectibles::Definition, collectibles::kDefinitionCapacity> rows{};
+    std::size_t count = 0;
+    if (!collectibles::snapshot(rows, count)) {
+        return false;
+    }
+    for (std::size_t row = 0; row < count; ++row) {
+        if (rows[row].itemDefinitionIndex == itemDefinitionIndex) {
+            collectibleIndex = rows[row].collectibleIndex;
+            return true;
+        }
+    }
+    return false;
+}
+
 /** Prepares the exact three-byte opcode-1820 Collections item request. */
 void acquire_item(const middleware::web_service::Message& message, Outcome& outcome) noexcept {
     middleware::web_service::messages::opcode1820::Request request{};
@@ -723,96 +1260,436 @@ void acquire_item(const middleware::web_service::Message& message, Outcome& outc
                                 0);
         return;
     }
+    (void)grant_item_definition(message, collectibleIndex, itemDefinitionIndex, outcome);
+}
 
-    state::build_data::items::Definition definition{};
-    if (!state::build_data::find_item_definition_index(itemDefinitionIndex, definition)) {
-        report_item_acquisition(
-            message, "fail", "item_definition", collectibleIndex, itemDefinitionIndex, 0, 0);
-        return;
+/**
+ * Resolves one vendor row to the item it sells.
+ *
+ * Shared by the purchase (901) and the quest acquire (904), which name a row the same way, so the
+ * two cannot drift apart.
+ *
+ * @param vendorIndex Vendor table row.
+ * @param rowIndex Sale row within that vendor.
+ * @param itemDefinitionIndex Receives the item the row sells.
+ * @param reason Receives the step that failed, when one does.
+ * @return True when the row resolved.
+ */
+[[nodiscard]] bool resolve_vendor_row(std::int32_t vendorIndex,
+                                      std::int32_t rowIndex,
+                                      std::uint16_t& itemDefinitionIndex,
+                                      std::int32_t& categoryIndex,
+                                      const char*& reason) noexcept {
+    namespace vendor_domain = state::build_data::vendors;
+    if (vendorIndex < 0 || rowIndex < 0) {
+        reason = "negative_index";
+        return false;
     }
-
-    state::build_data::items::details::Definition detail{};
-    state::build_data::inventory::buckets::Descriptor bucket{};
-    if (!state::build_data::find_configured_item_detail(itemDefinitionIndex, detail)
-        || detail.definitionIndex != itemDefinitionIndex
-        || detail.definitionHash != definition.definitionHash
-        || detail.bucketId != definition.bucketId
-        || !state::build_data::find_inventory_bucket_descriptor(detail.bucketId, bucket)) {
-        report_item_acquisition(message,
-                                "fail",
-                                "item_detail_or_bucket",
-                                collectibleIndex,
-                                itemDefinitionIndex,
-                                definition.definitionHash,
-                                0);
-        return;
+    vendor_domain::IndexEntry entry{};
+    vendor_domain::Definition definition{};
+    if (!vendor_domain::find_index(static_cast<std::uint16_t>(vendorIndex), entry)
+        || !vendor_domain::find(entry.definitionHash, definition)) {
+        reason = "vendor";
+        return false;
     }
+    static std::array<vendor_domain::SaleRow, vendor_domain::kSaleRowCapacity> rows{};
+    std::size_t count = 0;
+    if (!vendor_domain::sale_rows(definition, rows, count)
+        || static_cast<std::size_t>(rowIndex) >= count) {
+        reason = "sale_row";
+        return false;
+    }
+    itemDefinitionIndex = rows[static_cast<std::size_t>(rowIndex)].itemIndex;
+    // Sale row +100. The catalog still calls this `installedIndex`, but it is the vendor
+    // categoryIndex - established by correlating 3,304 rows against the manifest.
+    categoryIndex = rows[static_cast<std::size_t>(rowIndex)].installedIndex;
+    return true;
+}
 
-    namespace bucket_domain = state::build_data::inventory::buckets;
+/** Pursuit rows written out when a vendor is asked what it actually sells. */
+constexpr std::size_t kPursuitListCap = 64;
+
+/**
+ * Lists the sale rows of one vendor whose item is a pursuit.
+ *
+ * A pursuit is what lands in the Quests tab, and the grant path for one is already proven: a row
+ * resolves to an item, the item goes to the character inventory, and the tab shows it. What is not
+ * known for a given vendor is *which* of its rows are pursuits at all. Amanda declares 220 sale
+ * rows, and a tile that carries no row is not one of them.
+ *
+ * The classification is the shared rule, so this list and the duplicate check can never disagree
+ * about what counts as a quest.
+ *
+ * @param vendorIndex Vendor to list.
+ */
+void report_pursuit_rows(std::int32_t vendorIndex) noexcept {
+    namespace vendor_domain = state::build_data::vendors;
     namespace detail_domain = state::build_data::items::details;
-    if (bucket.arraySelector == bucket_domain::ArraySelector::profile) {
-        if (detail.instancedDefinitionState != detail_domain::InstancedDefinitionState::stackable) {
-            report_item_acquisition(message,
-                                    "fail",
-                                    "profile_item_instanced",
-                                    collectibleIndex,
-                                    itemDefinitionIndex,
-                                    definition.definitionHash,
-                                    0);
-            return;
-        }
-        state::PendingProfileItemAcquisition mutation{};
-        if (!state::prepare_profile_item_acquisition(
-                collectibleIndex, definition.definitionHash, mutation)) {
-            report_item_acquisition(message,
-                                    "fail",
-                                    "profile_state",
-                                    collectibleIndex,
-                                    itemDefinitionIndex,
-                                    definition.definitionHash,
-                                    0);
-            return;
-        }
-        outcome.mutation = mutation;
-        report_item_acquisition(message,
-                                "ok",
-                                "profile_ready",
-                                collectibleIndex,
-                                itemDefinitionIndex,
-                                definition.definitionHash,
-                                0);
+    vendor_domain::IndexEntry entry{};
+    vendor_domain::Definition definition{};
+    if (vendorIndex < 0
+        || !vendor_domain::find_index(static_cast<std::uint16_t>(vendorIndex), entry)
+        || !vendor_domain::find(entry.definitionHash, definition)) {
         return;
     }
-    if (bucket.arraySelector != bucket_domain::ArraySelector::character) {
-        report_item_acquisition(message,
-                                "fail",
-                                "unsupported_inventory_array",
-                                collectibleIndex,
-                                itemDefinitionIndex,
-                                definition.definitionHash,
-                                0);
+    static std::array<vendor_domain::SaleRow, vendor_domain::kSaleRowCapacity> rows{};
+    std::size_t count = 0;
+    if (!vendor_domain::sale_rows(definition, rows, count)) {
         return;
     }
+    // One item repeats across dozens of rows - Amanda declares 38 consecutive rows of a single
+    // placeholder - so listing rows rather than items buries everything interesting under filler.
+    static std::array<std::uint16_t, kPursuitListCap> seen{};
+    std::size_t listed = 0;
+    std::size_t pursuits = 0;
+    for (std::size_t row = 0; row < count; ++row) {
+        const std::uint16_t itemIndex = rows[row].itemIndex;
+        detail_domain::Definition detail{};
+        if (!state::build_data::find_configured_item_detail(itemIndex, detail)
+            || detail.equipmentSlot.has_value() || detail.maxStackSize > 1) {
+            continue;
+        }
+        ++pursuits;
+        bool duplicate = false;
+        for (std::size_t index = 0; index < listed; ++index) {
+            duplicate = duplicate || seen[index] == itemIndex;
+        }
+        if (duplicate || listed >= kPursuitListCap) {
+            continue;
+        }
+        seen[listed] = itemIndex;
+        ++listed;
+        std::array<char, core::log::kLineCapacity> line{};
+        const int written = std::snprintf(line.data(),
+                                          line.size(),
+                                          "ev=vendor stage=pursuit vendor=%d sale=%zu item=%u "
+                                          "hash=0x%08X bucket=%u",
+                                          static_cast<int>(vendorIndex),
+                                          row,
+                                          static_cast<unsigned>(itemIndex),
+                                          detail.definitionHash,
+                                          static_cast<unsigned>(detail.bucketId));
+        if (written > 0) {
+            // One line per distinct row, so this is the detail behind the summary rather than
+            // something worth putting in front of everything else that reports at info.
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::debug,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
+    }
+    std::array<char, core::log::kLineCapacity> summary{};
+    const int written = std::snprintf(summary.data(),
+                                      summary.size(),
+                                      "ev=vendor stage=pursuits vendor=%d sale_rows=%zu "
+                                      "pursuits=%zu distinct_listed=%zu",
+                                      static_cast<int>(vendorIndex),
+                                      count,
+                                      pursuits,
+                                      listed);
+    if (written > 0) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::info,
+                         {summary.data(), static_cast<std::size_t>(written)});
+    }
+}
 
-    state::PendingItemAcquisition mutation{};
-    if (!state::prepare_item_acquisition(collectibleIndex, definition.definitionHash, mutation)) {
-        report_item_acquisition(message,
-                                "fail",
-                                "state",
-                                collectibleIndex,
-                                itemDefinitionIndex,
-                                definition.definitionHash,
-                                0);
+/** An installed row names its item by definition hash at this offset. */
+constexpr std::size_t kInstalledRowHashOffset = 0;
+/** FNV-1's basis, which this engine also uses as its absent-hash sentinel. */
+constexpr std::uint32_t kAbsentNameHash = 0x811C9DC5U;
+
+/**
+ * Resolves the item behind a 904 that names no sale row.
+ *
+ * Amanda Holliday's Legacy Content tiles send `slot=1, row=-1`, where every working request names a
+ * real sale row. So those tiles are not sale rows, and the slot is the only thing identifying them.
+ * The old codec turned that -1 into 65535 and refused it as an out-of-range row, which was the same
+ * refusal by luck rather than by reading the request.
+ *
+ * Measured on the Red War tile: vendor 27 declares 220 sale rows but **22 installed rows and 22
+ * third rows**, and the slot is 1. The two parallel counts are what say the slot indexes them
+ * rather than the sale array. That installed row reads
+ * `7FC947A6 00000000 00000000 C59D1C81 FFFFFFFF FFFFFFFF` - a hash at `+0`, then the FNV-1 absent
+ * sentinel at `+12`, then two -1s. So `+0` names the item by **definition hash**, where a sale row
+ * names its item by index at `+70`.
+ *
+ * The resolution is logged whether or not it succeeds, because the grant that follows is only as
+ * good as the hash, and a wrong item that commits cleanly is harder to spot than a refusal.
+ *
+ * @param vendorIndex Vendor the request named.
+ * @param slotIndex The 16-bit field, which is all the request carries.
+ * @param itemDefinitionIndex Receives the item, or the unavailable sentinel.
+ * @return True when the row's hash resolved to an installed item definition.
+ */
+[[nodiscard]] bool resolve_rowless_quest(std::int32_t vendorIndex,
+                                         std::int32_t slotIndex,
+                                         std::uint16_t& itemDefinitionIndex) noexcept {
+    namespace vendor_domain = state::build_data::vendors;
+    itemDefinitionIndex = kUnavailableDefinitionIndex;
+    vendor_domain::IndexEntry entry{};
+    vendor_domain::Definition definition{};
+    if (vendorIndex < 0 || slotIndex < 0
+        || !vendor_domain::find_index(static_cast<std::uint16_t>(vendorIndex), entry)
+        || !vendor_domain::find(entry.definitionHash, definition)) {
+        return false;
+    }
+    static std::array<vendor_domain::InstalledRow, vendor_domain::kInstalledRowCapacity> rows{};
+    std::size_t count = 0;
+    if (!vendor_domain::installed_rows(definition, rows, count)
+        || static_cast<std::size_t>(slotIndex) >= count) {
+        return false;
+    }
+    const auto& raw = rows[static_cast<std::size_t>(slotIndex)].raw;
+    std::uint32_t definitionHash = 0;
+    std::memcpy(&definitionHash, raw.data() + kInstalledRowHashOffset, sizeof definitionHash);
+
+    state::build_data::items::Definition item{};
+    const bool resolved = definitionHash != kAbsentNameHash
+                          && state::build_data::find_item_definition_hash(definitionHash, item);
+    if (resolved) {
+        itemDefinitionIndex = item.definitionIndex;
+    }
+    std::array<char, core::log::kLineCapacity> line{};
+    int written = std::snprintf(line.data(),
+                                line.size(),
+                                "ev=ws904 stage=rowless vendor=%d slot=%d installed=%u sale=%u "
+                                "third=%u hash=0x%08X item=%u resolved=%u hex=",
+                                static_cast<int>(vendorIndex),
+                                static_cast<int>(slotIndex),
+                                static_cast<unsigned>(definition.installedCount),
+                                static_cast<unsigned>(definition.saleCount),
+                                static_cast<unsigned>(definition.thirdCount),
+                                definitionHash,
+                                static_cast<unsigned>(itemDefinitionIndex),
+                                resolved ? 1U : 0U);
+    if (written > 0 && static_cast<std::size_t>(written) < line.size()) {
+        std::size_t length = static_cast<std::size_t>(written);
+        const auto* const bytes = reinterpret_cast<const std::byte*>(raw.data());
+        (void)core::log::append_hex(line, length, {bytes, raw.size()});
+        if (length != 0) {
+            core::log::write(core::log::Channel::server,
+                             resolved ? core::log::Level::info : core::log::Level::warn,
+                             {line.data(), length});
+        }
+    }
+    return resolved;
+}
+
+/** What one resolved vendor row turned out to be, once it was settled. */
+enum class RowOutcome : std::uint8_t {
+    /** The row rolled a bounty from an authored pool. */
+    bountyRoll,
+    /** The row charged one stack and credited others. */
+    exchange,
+    /** The row's offer is answered: its item was handed over, or was already held. */
+    granted,
+    /** The row should have granted and could not, so its offer still stands. */
+    grantRefused,
+};
+
+/**
+ * Settles one resolved vendor row, in the order a row's behaviours are tried.
+ *
+ * Both vendor opcodes end here. A row is one of three things, and which it is cannot be read off
+ * the row itself - each is recognised by an authored rule keyed to the vendor, so they are tried in
+ * turn and the first that claims the row owns it. Keeping that order in one place is what stops the
+ * two opcodes drifting: a behaviour taught to one and not the other is the shape of bug this path
+ * has already produced more than once.
+ *
+ * @param message Request being answered.
+ * @param opcode Opcode to report under.
+ * @param vendorIndex Vendor the request names.
+ * @param rowIndex Sale row the request names.
+ * @param categoryIndex Category of that row, from sale row +100.
+ * @param itemDefinitionIndex Item the row names.
+ * @param outcome Receives whatever mutation the row prepared.
+ * @return What the row turned out to be.
+ */
+RowOutcome settle_vendor_row(const middleware::web_service::Message& message,
+                             std::uint16_t opcode,
+                             std::int32_t vendorIndex,
+                             std::int32_t rowIndex,
+                             std::int32_t categoryIndex,
+                             std::uint16_t itemDefinitionIndex,
+                             Outcome& outcome) noexcept {
+    std::uint16_t rolledBounty = kUnavailableDefinitionIndex;
+    if (roll_vendor_bounty(vendorIndex, categoryIndex, rolledBounty)) {
+        report_purchase(opcode,
+                        "ok",
+                        rolledBounty == kUnavailableDefinitionIndex ? "bounty_pool_empty"
+                                                                   : "bounty_roll",
+                        vendorIndex,
+                        rowIndex,
+                        itemDefinitionIndex);
+        if (rolledBounty != kUnavailableDefinitionIndex) {
+            std::uint16_t rolledCollectible = state::build_data::collectibles::kNoCollectibleIndex;
+            (void)find_collectible_for_item(rolledBounty, rolledCollectible);
+            (void)grant_item_definition(message, rolledCollectible, rolledBounty, outcome);
+        }
+        return RowOutcome::bountyRoll;
+    }
+    state::PendingProfileItemAcquisition exchange{};
+    if (exchange_vendor_row(vendorIndex, rowIndex, exchange)) {
+        report_purchase(opcode, "ok", "exchange", vendorIndex, rowIndex, itemDefinitionIndex);
+        if (exchange.prepared) {
+            outcome.mutation = exchange;
+        }
+        return RowOutcome::exchange;
+    }
+    // A placeholder row grants what it stands for, not the placeholder: a Dummy item put in the
+    // Quests bucket is one the client will not draw, and the row never settles because the player
+    // never receives what it offered.
+    std::uint16_t granted = itemDefinitionIndex;
+    std::uint16_t substituteIndex = kUnavailableDefinitionIndex;
+    switch (substitute_for_item(granted, substituteIndex)) {
+    case Substitution::replaced:
+        granted = substituteIndex;
+        break;
+    case Substitution::broken:
+        // The rule proves the row's item is a placeholder, so granting it would be the wrong
+        // grant this path exists to prevent. The rule itself already logged what is missing.
+        report_purchase(opcode, "fail", "substitute_missing", vendorIndex, rowIndex, granted);
+        return RowOutcome::grantRefused;
+    case Substitution::none:
+        break;
+    }
+    std::uint16_t collectibleIndex = state::build_data::collectibles::kNoCollectibleIndex;
+    const bool collected = find_collectible_for_item(granted, collectibleIndex);
+    report_purchase(opcode,
+                    "ok",
+                    collected ? "resolved" : "resolved_no_collectible",
+                    vendorIndex,
+                    rowIndex,
+                    granted);
+    // A grant that failed for a transient reason - the loadout would not resolve, the bucket was
+    // full - leaves the row's offer standing, and the caller must not treat it as answered.
+    return grant_item_definition(message, collectibleIndex, granted, outcome)
+                   == GrantResult::refused
+               ? RowOutcome::grantRefused
+               : RowOutcome::granted;
+}
+
+/**
+ * Prepares one opcode-904 quest acquire.
+ *
+ * A quest names a vendor row exactly as a purchase does, and the item behind it is granted through
+ * the same path, so a quest lands in the inventory the way a bounty now does.
+ */
+void acquire_quest(const middleware::web_service::Message& message, Outcome& outcome) noexcept {
+    namespace quest = middleware::web_service::messages::opcode904;
+    quest::Request request{};
+    if (!quest::parse_request(message, request)) {
+        report_purchase(quest::kOpcode, "fail", "payload", -1, -1, kUnavailableDefinitionIndex);
         return;
     }
-    outcome.mutation = mutation;
-    report_item_acquisition(message,
-                            "ok",
-                            "ready",
-                            collectibleIndex,
+    // The 16-bit slot field is where the click landed, and indexing sale rows with it granted
+    // armour mods. The 32-bit field is the real row; a body without one has never been captured,
+    // and guessing the slot in as a sale row would reproduce that exact wrong grant - so it is
+    // refused, and the refusal names the shape so a real capture can settle it.
+    if (!request.hasSaleIndex) {
+        report_purchase(quest::kOpcode,
+                        "fail",
+                        "sale_field_missing",
+                        request.vendorIndex,
+                        request.slotIndex,
+                        kUnavailableDefinitionIndex);
+        return;
+    }
+    const std::int32_t row = request.saleIndex;
+    std::uint16_t itemDefinitionIndex = 0;
+    const char* reason = "unknown";
+    // A row of -1 is the client saying this tile is not a sale row at all, rather than a row that
+    // failed to resolve, so it takes the installed array instead. Falling back to the slot as a
+    // sale row would grant whatever sits there, which is the wrong-item bug that made quests hand
+    // out armour mods.
+    const bool rowless = row < 0;
+    // A rowless 904 is an interaction reply rather than a purchase, and the rank-up reward tile is
+    // one: its reply names no sale row, so the slot field is the interaction it answered.
+    std::int32_t questCategoryIndex = -1;
+    const bool located =
+        rowless ? resolve_rowless_quest(request.vendorIndex, request.slotIndex, itemDefinitionIndex)
+                : resolve_vendor_row(request.vendorIndex, row, itemDefinitionIndex,
+                                    questCategoryIndex, reason);
+    if (!located) {
+        report_purchase(quest::kOpcode,
+                        "fail",
+                        rowless ? "rowless_unresolved" : reason,
+                        request.vendorIndex,
+                        row,
+                        kUnavailableDefinitionIndex);
+        // A tile that names no row grants nothing, so say what this vendor does offer that would
+        // land in the Quests tab. That is the difference between "this click is broken" and "this
+        // click was never a quest".
+        if (rowless) {
+            report_pursuit_rows(request.vendorIndex);
+        }
+        return;
+    }
+    const RowOutcome settled = settle_vendor_row(message,
+                                                 quest::kOpcode,
+                                                 request.vendorIndex,
+                                                 row,
+                                                 questCategoryIndex,
+                                                 itemDefinitionIndex,
+                                                 outcome);
+    // Only a row whose offer is answered retires the banner: handed over, or already held from an
+    // earlier answer. A bounty roll and an exchange leave the banner's own question unanswered, and
+    // a grant that failed for a transient reason still owes the player its quest - retiring the
+    // banner then would bury the offer until relaunch.
+    if (settled != RowOutcome::granted) {
+        return;
+    }
+    // The banner that offered this quest has now been answered, and nothing else tells the client
+    // so: its picker keeps choosing the same interaction for as long as the quest is offerable.
+    // Retiring it here, exactly where the shipped game appends its own entry, lets the next
+    // interaction take the screen.
+    if (request.vendorIndex >= 0
+        && request.vendorIndex
+               < static_cast<std::int32_t>(client::hooks::vendor_banner::kVendorCapacity)) {
+        (void)client::hooks::vendor_banner::suppress_current(
+            static_cast<std::uint16_t>(request.vendorIndex));
+    }
+}
+
+/**
+ * Prepares one opcode-901 vendor purchase, for any Tower vendor.
+ *
+ * The request names a vendor row and a sale row. The sale row names an item-definition index, which
+ * is the same thing a Collections pull resolves its collectible to, so this resolves the row and
+ * hands over to the very same grant.
+ *
+ * Cost is deliberately not charged: the sale row's cost-bearing fields are still role-open, and the
+ * domain header warns against naming one a cost without its mutation reader.
+ */
+void purchase_item(const middleware::web_service::Message& message, Outcome& outcome) noexcept {
+    namespace purchase = middleware::web_service::messages::opcode901;
+    purchase::Request request{};
+    if (!purchase::parse_request(message, request)) {
+        report_purchase(purchase::kOpcode, "fail", "payload", -1, -1, kUnavailableDefinitionIndex);
+        return;
+    }
+    std::uint16_t itemDefinitionIndex = 0;
+    const char* reason = "unknown";
+    std::int32_t categoryIndex = -1;
+    if (!resolve_vendor_row(
+            request.vendorIndex, request.saleIndex, itemDefinitionIndex, categoryIndex, reason)) {
+        report_purchase(purchase::kOpcode,
+                        "fail",
+                        reason,
+                        request.vendorIndex,
+                        request.saleIndex,
+                        kUnavailableDefinitionIndex);
+        return;
+    }
+    // Bounties, quest steps and tokens carry no collectible. The acquisition takes the sentinel
+    // rather than a made-up row, and both prepare and commit skip the collectible steps for it.
+    (void)settle_vendor_row(message,
+                            purchase::kOpcode,
+                            request.vendorIndex,
+                            request.saleIndex,
+                            categoryIndex,
                             itemDefinitionIndex,
-                            definition.definitionHash,
-                            mutation.acquiredInstanceSoid);
+                            outcome);
 }
 
 } // namespace sunrise::server::web_service

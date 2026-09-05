@@ -19,5 +19,7 @@ void mutate_equipped_socket_plug(const middleware::web_service::Message& message
 void mutate_item_state(const middleware::web_service::Message& message, Outcome& outcome) noexcept;
 void dismantle_item(const middleware::web_service::Message& message, Outcome& outcome) noexcept;
 void acquire_item(const middleware::web_service::Message& message, Outcome& outcome) noexcept;
+void purchase_item(const middleware::web_service::Message& message, Outcome& outcome) noexcept;
+void acquire_quest(const middleware::web_service::Message& message, Outcome& outcome) noexcept;
 
 } // namespace sunrise::server::web_service
