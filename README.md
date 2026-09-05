@@ -45,6 +45,8 @@ Event settings live in `bin/x64/Sunrise/roster_exclude_keys.txt` and `event_musi
 With no exclusion file, all supported event decorations are enabled. The included
 `event_presets` are optional: copy one preset's contents into `roster_exclude_keys.txt`.
 At the Farm, changing music may require restarting the game.
+If returning from an unreleased 0.4 build, restore your 0.3.2 settings backup first;
+the migrated 0.4 settings schema is not compatible with 0.3.2.
 The bundled `vendor_rules` folder contains optional upstream reference files; see its
 README before copying rules beside `settings.json`. Existing authored rules take precedence.
 
