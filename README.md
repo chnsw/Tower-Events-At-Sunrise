@@ -9,7 +9,7 @@ upstream Sunrise defaults (**SUNRISE 0.3.2.0**).
 
 ## Events
 
-Open **Server → Events** in the in-game menu to select decorations and music.
+Open **Events** in the in-game menu to select decorations and music.
 Save your selection, then return to orbit and load the Tower again.
 
 - Festival of the Lost: Courtyard, Bazaar, Hangar and Annex.
@@ -35,7 +35,7 @@ scripts. This does not implement every event quest, vendor reward, or seasonal g
 2. Close the game and back up your existing `bin/x64/steam_api64.dll` and
    `bin/x64/Sunrise` folder.
 3. Extract this fork's release archive into the game folder, replacing the DLL.
-4. Start the game. Use **Server → Events**, then make an orbit round-trip.
+4. Start the game. Use **Events**, then make an orbit round-trip.
 
 The archive does not contain game assets, account settings, or game keys. Existing
 settings and event selections are retained. Cache format 49 makes the runtime rebuild

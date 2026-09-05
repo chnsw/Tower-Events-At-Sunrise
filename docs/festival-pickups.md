@@ -66,6 +66,8 @@ obey the installed stack and bucket limits. No direct client inventory writes.
 Validation on 2026-09-05:
 
 - Release x64 build passed.
+- The packaged 0.3.2.0 fork passed live startup, character selection, the Events page,
+  and a Festival Tower load with native Hangar decorations visible.
 - `tests/loot_pickup_test.cpp`: four captured payloads, 320 truncated variants,
   malformed identity/subject/flags/padding, and nonfinite positions.
 - `tests/festival_pickups_test.cpp`: hidden-event/wrong-account/wrong-destination
