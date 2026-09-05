@@ -10,12 +10,15 @@
 #include "../../../core/filesystem/path.h"
 #include "../../../core/logging/log.h"
 #include "../../../core/settings/rule_text.h"
+#include "../../investment/investment_overrides.h"
 
 namespace sunrise::state::activity::events {
 namespace {
 
 /** The file, beside settings.json. */
 constexpr std::wstring_view kFileName = L"roster_exclude_keys.txt";
+/** The music choice, beside it: one token from `kMusicTokens`, `#` comments. Absent means auto. */
+constexpr std::wstring_view kMusicFileName = L"event_music.txt";
 /** Room for the header, every mapped key with its comment, and any unmapped keys after them. */
 constexpr std::size_t kDocumentCapacity = 8192;
 /** What the page writes above the keys, so a hand editor knows what the file does. */
@@ -32,7 +35,45 @@ SRWLOCK g_lock = SRWLOCK_INIT;
 KeySet g_published{};
 /** Keys the file holds. */
 KeySet g_pending{};
+/** Which theme is asked for. */
+Music g_music{Music::followEvents};
 bool g_loaded{};
+
+/** Reads the music file. An absent file, or one naming nothing known, is `followEvents`. */
+Music read_music_file() noexcept {
+    static std::array<char, 256> text{};
+    text.fill('\0');
+    if (!core::path::read_artifact_text(kMusicFileName, text)) {
+        return Music::followEvents;
+    }
+    // First word that is not inside a comment.
+    std::size_t at = 0;
+    while (at < text.size() && text[at] != '\0') {
+        if (text[at] == '#') {
+            while (at < text.size() && text[at] != '\0' && text[at] != '\n') {
+                ++at;
+            }
+            continue;
+        }
+        if (text[at] == ' ' || text[at] == '\t' || text[at] == '\r' || text[at] == '\n') {
+            ++at;
+            continue;
+        }
+        std::size_t end = at;
+        while (end < text.size() && text[end] != '\0' && text[end] != ' ' && text[end] != '\t'
+               && text[end] != '\r' && text[end] != '\n' && text[end] != '#') {
+            ++end;
+        }
+        const std::string_view word{text.data() + at, end - at};
+        for (std::size_t index = 0; index < kMusicCount; ++index) {
+            if (word == kMusicTokens[index]) {
+                return static_cast<Music>(index);
+            }
+        }
+        return Music::followEvents;
+    }
+    return Music::followEvents;
+}
 
 /** Logs one set. @param stage Which set moved and why. */
 void report(const char* stage, const KeySet& keys) noexcept {
@@ -79,13 +120,68 @@ void read_file(KeySet& keys) noexcept {
     }
 }
 
-/** Loads the file into both sets. The caller holds the lock exclusively. */
+/** Loads the files into both sets and the music choice. The caller holds the lock exclusively. */
 void load_locked(const char* stage) noexcept {
     read_file(g_pending);
     g_published = g_pending;
+    g_music = read_music_file();
     g_loaded = true;
     report(stage, g_published);
 }
+
+/**
+ * Makes the family-5 override list agree with one selection: a shown event's flags and values go
+ * live, a hidden event's are cleared. With an explicit music choice the identity flags follow the
+ * choice instead, because the theme is what they select. Called with no lock held, because the
+ * override list has its own lock and the roster asks this module questions from under other locks.
+ * @param pending The set the next join will withhold.
+ * @param music The theme asked for.
+ */
+void apply_flags(const KeySet& pending, Music music) noexcept {
+    std::size_t set = 0;
+    std::size_t cleared = 0;
+    const Event chosen = music_event(music);
+    for (const EventFlag& entry : kEventFlags) {
+        const bool identity = entry.slot == identity_flag(entry.event);
+        const bool live = identity && chosen != Event::count ? entry.event == chosen
+                                                              : shown(pending, entry.event);
+        if (live) {
+            set += investment::set_flag_override(entry.slot, kFlagLive) ? 1 : 0;
+        } else {
+            investment::clear_flag_override(entry.slot);
+            ++cleared;
+        }
+    }
+    // Guardian Games has no dressing, so its flag follows the music choice and nothing else.
+    if (music == Music::guardianGames) {
+        set += investment::set_flag_override(kGuardianGamesFlag, kFlagLive) ? 1 : 0;
+    } else {
+        investment::clear_flag_override(kGuardianGamesFlag);
+        ++cleared;
+    }
+    for (const EventValue& entry : kEventValues) {
+        if (shown(pending, entry.event)) {
+            set += investment::set_value_override(entry.slot, entry.value) ? 1 : 0;
+        } else {
+            investment::clear_value_override(entry.slot);
+            ++cleared;
+        }
+    }
+    std::array<char, core::log::kLineCapacity> line{};
+    const int used = std::snprintf(line.data(),
+                                   line.size(),
+                                   "ev=events stage=flags set=%zu cleared=%zu music=%s",
+                                   set,
+                                   cleared,
+                                   kMusicTokens[static_cast<std::size_t>(music)]);
+    if (used > 0) {
+        const std::size_t length = (std::min)(static_cast<std::size_t>(used), line.size() - 1);
+        core::log::write(
+            core::log::Channel::state, core::log::Level::info, {line.data(), length});
+    }
+}
+
+} // namespace
 
 /** Loads the file the first time anything asks, so a roster built before any join is right. */
 void ensure_loaded() noexcept {
@@ -96,11 +192,19 @@ void ensure_loaded() noexcept {
         return;
     }
     AcquireSRWLockExclusive(&g_lock);
-    if (!g_loaded) {
+    const bool first = !g_loaded;
+    if (first) {
         load_locked("first");
     }
+    const KeySet pending = g_pending;
+    const Music music = g_music;
     ReleaseSRWLockExclusive(&g_lock);
+    if (first) {
+        apply_flags(pending, music);
+    }
 }
+
+namespace {
 
 /**
  * Appends one key line.
@@ -140,7 +244,10 @@ void ensure_loaded() noexcept {
 void reload() noexcept {
     AcquireSRWLockExclusive(&g_lock);
     load_locked("join");
+    const KeySet pending = g_pending;
+    const Music music = g_music;
     ReleaseSRWLockExclusive(&g_lock);
+    apply_flags(pending, music);
 }
 
 /** @return True when the published set withholds the key. */
@@ -193,8 +300,51 @@ bool save(const KeySet& pending) noexcept {
     }
     AcquireSRWLockExclusive(&g_lock);
     g_pending = pending;
+    const Music music = g_music;
     ReleaseSRWLockExclusive(&g_lock);
     report("save", pending);
+    apply_flags(pending, music);
+    investment::request_client_refetch();
+    return true;
+}
+
+/** @return Which theme the Tower is asked to play. */
+Music music() noexcept {
+    ensure_loaded();
+    AcquireSRWLockShared(&g_lock);
+    const Music result = g_music;
+    ReleaseSRWLockShared(&g_lock);
+    return result;
+}
+
+/** Writes the music choice and re-applies the event flags. */
+bool set_music(Music music) noexcept {
+    ensure_loaded();
+    if (static_cast<std::size_t>(music) >= kMusicCount) {
+        return false;
+    }
+    std::array<char, 512> document{};
+    const int used = std::snprintf(
+        document.data(),
+        document.size(),
+        "# Tower music. One of: auto festival dawning crimson solstice guardian_games.\n"
+        "# auto lets the client pick among the shown events' themes. Heard at the next launch.\n"
+        "%s\n",
+        kMusicTokens[static_cast<std::size_t>(music)]);
+    if (used <= 0
+        || !core::path::write_artifact_text(
+            kMusicFileName, std::string_view{document.data(), static_cast<std::size_t>(used)})) {
+        core::log::write(core::log::Channel::state,
+                         core::log::Level::warn,
+                         "ev=events stage=music result=failed");
+        return false;
+    }
+    AcquireSRWLockExclusive(&g_lock);
+    g_music = music;
+    const KeySet pending = g_pending;
+    ReleaseSRWLockExclusive(&g_lock);
+    apply_flags(pending, music);
+    investment::request_client_refetch();
     return true;
 }
 

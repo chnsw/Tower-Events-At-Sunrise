@@ -154,10 +154,26 @@ fill_roster(const layouts::Definition& layout, Scratch& scratch, message::Roster
         || groupCount > roster.groups.size()) {
         return false;
     }
+    // A withheld key can be a top-level group too: on a destination with one slice set every
+    // admitted key is "safe" and lands here rather than in a bubble sub-block (the Farm,
+    // 2026-09-05), so the selection has to be applied to both halves. The survivors are compacted.
+    std::size_t keptTop = 0;
     for (std::size_t index = 0; index < layout.rosterGroupCount; ++index) {
-        if (!fill_group(layout.rosterGroups[index], scratch, index, roster)) {
+        layouts::RosterGroup probe{};
+        if (!state::build_data::find_roster_group(layout.rosterGroups[index], probe)) {
             return false;
         }
+        if (state::activity::events::withheld(probe.registryKey)
+            && !carries_activity_state(probe)) {
+            continue;
+        }
+        if (!fill_group(layout.rosterGroups[index], scratch, keptTop, roster)) {
+            return false;
+        }
+        ++keptTop;
+    }
+    if (keptTop == 0) {
+        return false;
     }
     // The per-bubble groups follow the top-level ones in the same array, because phase 2 seeds
     // every group the body registers and the client holds its apply back until they are all in.
@@ -177,15 +193,14 @@ fill_roster(const layouts::Definition& layout, Scratch& scratch, message::Roster
             && !carries_activity_state(probe)) {
             continue;
         }
-        if (!fill_group(
-                layout.bubbleGroups[index], scratch, layout.rosterGroupCount + kept, roster)) {
+        if (!fill_group(layout.bubbleGroups[index], scratch, keptTop + kept, roster)) {
             return false;
         }
         keptMasks[kept] = layout.bubbleGroupMasks[index];
         ++kept;
     }
-    roster.topLevelGroupCount = layout.rosterGroupCount;
-    roster.groupCount = std::size_t{layout.rosterGroupCount} + kept;
+    roster.topLevelGroupCount = keptTop;
+    roster.groupCount = keptTop + kept;
     roster.bubbleSubBlocks = fill_sub_blocks(std::span(keptMasks).first(kept), scratch, roster);
     // Only a top-level group can bind the player: its object is in every slice set, so the gate
     // reads it wherever the player is.

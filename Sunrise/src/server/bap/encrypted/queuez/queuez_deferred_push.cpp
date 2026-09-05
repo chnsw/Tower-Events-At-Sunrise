@@ -10,6 +10,7 @@
 #include "../internal.h"
 #include "../push/activity/activity_keepalive_push.h"
 #include "queuez_state_validation.h"
+#include "../activity_message/festival_pickups.h"
 
 namespace sunrise::server::bap::encrypted {
 namespace {
@@ -270,6 +271,9 @@ bool consume_deferred(Session& session,
     // A failed resync remains armed and blocks unrelated deferred output until it can be retried.
     if (session.accountResyncArmed) {
         return false;
+    }
+    if (festival_pickups::consume(session, scratch, response, written, touchesScratch)) {
+        return true;
     }
     if (consume_ability_refresh(session, scratch, response, written, touchesScratch)) {
         return true;

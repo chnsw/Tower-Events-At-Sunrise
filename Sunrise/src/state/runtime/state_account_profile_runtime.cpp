@@ -443,9 +443,8 @@ apply_action_materials(const AccountState& before,
 /** @return True when a pending profile acquisition carries canonical dense before/after images. */
 [[nodiscard]] bool
 valid_profile_mutation_shape(const PendingProfileItemAcquisition& mutation) noexcept {
-    // An exchange is the other shape this mutation carries. Its quantities move by more than one
-    // and it changes more than one row, so the single-increment rules below cannot describe it -
-    // they exist to pin the Collections pull, which is the only thing that should reach them.
+    // Exchanges can change several rows. The single-stack rules below cover Collections and
+    // server-authored rewards, checking the precise amount that prepare promised.
     if (mutation.changeCount != 0) {
         if (!mutation.prepared || mutation.accountSoid == 0 || mutation.actionSource
             || mutation.appended || mutation.acquiredInstanceSoid != 0
@@ -508,7 +507,10 @@ valid_profile_mutation_shape(const PendingProfileItemAcquisition& mutation) noex
         || mutation.afterItemCount > authored_inventory::kProfileItemCapacity
         || mutation.profileIndex >= mutation.afterItemCount || mutation.previousQuantity < 0
         || mutation.acquiredQuantity <= mutation.previousQuantity
-        || mutation.acquiredQuantity - mutation.previousQuantity != 1
+        || mutation.acquiredAmount <= 0
+        || mutation.acquiredQuantity - mutation.previousQuantity != mutation.acquiredAmount
+        || (mutation.collectibleIndex != build_data::collectibles::kNoCollectibleIndex
+            && mutation.acquiredAmount != 1)
         || mutation.previousMutationSerial < 0
         || mutation.acquiredMutationSerial <= mutation.previousMutationSerial) {
         return false;

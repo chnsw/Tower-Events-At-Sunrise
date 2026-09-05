@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <string_view>
 
 #include "../../../../core/logging/log.h"
@@ -71,12 +72,24 @@ void clear_runtime() noexcept {
  * @return Stale once while armed, otherwise the native verdict.
  */
 __declspec(noinline) char __fastcall freshness(void* accessor) noexcept {
+    static std::atomic<std::uint32_t> verdicts{0};
+    const std::uint32_t verdict = verdicts.fetch_add(1, std::memory_order_relaxed) + 1;
     if (g_rebuildArmed.exchange(false, std::memory_order_acq_rel)) {
-        if (!g_reportedRebuild.exchange(true, std::memory_order_relaxed)) {
+        // Every consumption is logged with the verdict ordinal, not only the first: whether a
+        // mid-session commit ever re-derives is the Tower music question (2026-09-05).
+        static std::atomic<std::uint32_t> rebuilds{0};
+        std::array<char, 96> line{};
+        const int written = std::snprintf(line.data(),
+                                          line.size(),
+                                          "ev=investment stage=derived result=rebuilt count=%u verdict=%u",
+                                          rebuilds.fetch_add(1, std::memory_order_relaxed) + 1,
+                                          verdict);
+        if (written > 0) {
             core::log::write(core::log::Channel::client,
                              core::log::Level::info,
-                             "ev=investment stage=derived result=rebuilt");
+                             {line.data(), static_cast<std::size_t>(written)});
         }
+        (void)g_reportedRebuild.exchange(true, std::memory_order_relaxed);
         return kStale;
     }
     const Freshness original = g_originalFreshness.load(std::memory_order_acquire);

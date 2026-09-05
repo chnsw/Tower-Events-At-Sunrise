@@ -40,9 +40,9 @@ inline constexpr std::array<const char*, kEventCount> kEventNames = {
 inline constexpr std::array<const char*, kEventCount> kEventAreas = {
     "Courtyard, Bazaar, Hangar and Annex.",
     "Courtyard, snow in the Bazaar and Hangar, and the Hangar rink with its ball game, goals and "
-    "scoreboards. Bungie dressed no Dawning in the Annex.",
+    "scoreboards. Bungie dressed no Dawning in the Annex. Also dresses the Farm.",
     "Courtyard only.",
-    "Courtyard only.",
+    "Courtyard, and the Farm.",
     "Courtyard only.",
     "The Saint-14 ship in the Hangar.",
 };
@@ -62,7 +62,7 @@ struct EventKey {
  * (Benedict 99-40, Season of Opulence), the same shape as the Drifter and Ada-1 slots beside it.
  * None of them shows anything on its own.
  */
-inline constexpr std::array<EventKey, 12> kEventKeys = {{
+inline constexpr std::array<EventKey, 14> kEventKeys = {{
     {0x7C6DE64FU, Event::festivalOfTheLost, "Courtyard"},
     {0xFC6B8707U, Event::festivalOfTheLost, "Bazaar"},
     {0xEE34BBABU, Event::festivalOfTheLost, "Hangar"},
@@ -71,11 +71,119 @@ inline constexpr std::array<EventKey, 12> kEventKeys = {{
     {0x2F2B8D00U, Event::dawning, "Bazaar snow"},
     {0x6E087824U, Event::dawning, "Hangar snow"},
     {0xDA989AA3U, Event::dawning, "Hangar rink"},
+    {0xC140FF19U, Event::dawning, "Farm"},
+    {0x4488AD94U, Event::crimsonDays, "Farm"},
     {0x27060E6CU, Event::ironBanner, "Courtyard"},
     {0x6CEFCC01U, Event::crimsonDays, "Courtyard"},
     {0xD5B68262U, Event::solstice, "Courtyard"},
     {0x9052672CU, Event::trialsSaint14, "Hangar"},
 }};
+
+/**
+ * The client's own idea of an event is a set of unlock flags, and the family-5 override list is
+ * how this server sets them. Each event has one identity flag, its first-year flag, which the
+ * Director nodes, Eva's stock and the expression pool's "an event is live" row all read: 777
+ * Crimson Days, 779 The Dawning, 884 Solstice of Heroes, 946 Festival of the Lost, 992 Guardian
+ * Games. Later years
+ * added stock flags (947 and 950 Festival, 7201 Crimson) and one value per event that must read 1
+ * (12496 Dawning, 8137 Festival, 8482 Crimson). Iron Banner and the Saint-14 ship are not events
+ * to the client, so they set nothing; slot 6038, once mistaken for Iron Banner, is the Forsaken
+ * entitlement. Attributed 2026-09-04 from the collectibles and vendor rows that read each slot.
+ */
+struct EventFlag {
+    std::uint16_t slot{};
+    Event event{};
+};
+
+struct EventValue {
+    std::uint16_t slot{};
+    std::int32_t value{};
+    Event event{};
+};
+
+/** Logical flag value the client reads as set. */
+inline constexpr std::uint8_t kFlagLive = 2;
+
+inline constexpr std::array<EventFlag, 7> kEventFlags = {{
+    {946, Event::festivalOfTheLost},
+    {947, Event::festivalOfTheLost},
+    {950, Event::festivalOfTheLost},
+    {779, Event::dawning},
+    {777, Event::crimsonDays},
+    {7201, Event::crimsonDays},
+    {884, Event::solstice},
+}};
+
+/**
+ * Guardian Games is a theme without dressing: its Courtyard podium group (key 0x0AFC31B6) is
+ * authored but its placement list was emptied in the shipped data, so the roster can show nothing
+ * for it. Its identity flag is therefore owned by the music choice alone.
+ */
+inline constexpr std::uint16_t kGuardianGamesFlag = 992;
+
+inline constexpr std::array<EventValue, 3> kEventValues = {{
+    {8137, 1, Event::festivalOfTheLost},
+    {12496, 1, Event::dawning},
+    {8482, 1, Event::crimsonDays},
+}};
+
+/**
+ * Which event's theme the Tower plays. Proven 2026-09-05: the theme follows the event's identity
+ * flag alone (779 Dawning, 777 Crimson Days, 946 Festival of the Lost, 884 Solstice, 992 Guardian
+ * Games), and with several set the client picks one by its own priority. `followEvents` leaves
+ * it to that priority; an explicit choice sets only that event's identity flag, so the other shown
+ * events keep their dressing, stock flags and live values but lose what their identity flag gates
+ * (Eva's Dawning stock, for one). The client reads its flags once at boot, so a change applies at
+ * the next launch.
+ */
+enum class Music : std::uint8_t {
+    followEvents,  // the client picks among the shown events' themes; Guardian Games never plays
+    festivalOfTheLost,
+    dawning,
+    crimsonDays,
+    solstice,
+    guardianGames,
+    count,
+};
+
+inline constexpr std::size_t kMusicCount = static_cast<std::size_t>(Music::count);
+
+/** Menu label of each choice, in `Music` order. */
+inline constexpr std::array<const char*, kMusicCount> kMusicNames = {
+    "Follow the shown events",
+    "Festival of the Lost",
+    "The Dawning",
+    "Crimson Days",
+    "Solstice of Heroes",
+    "Guardian Games",
+};
+
+/** The token each choice writes to `event_music.txt`, in `Music` order. */
+inline constexpr std::array<const char*, kMusicCount> kMusicTokens = {
+    "auto", "festival", "dawning", "crimson", "solstice", "guardian_games",
+};
+
+/** @return The identity flag that carries an event's theme, or 0 for an event without one. */
+[[nodiscard]] constexpr std::uint16_t identity_flag(Event event) noexcept {
+    switch (event) {
+    case Event::festivalOfTheLost: return 946;
+    case Event::dawning: return 779;
+    case Event::crimsonDays: return 777;
+    case Event::solstice: return 884;
+    default: return 0;
+    }
+}
+
+/** @return The event whose theme a choice names, or `Event::count` for `followEvents`. */
+[[nodiscard]] constexpr Event music_event(Music music) noexcept {
+    switch (music) {
+    case Music::festivalOfTheLost: return Event::festivalOfTheLost;
+    case Music::dawning: return Event::dawning;
+    case Music::crimsonDays: return Event::crimsonDays;
+    case Music::solstice: return Event::solstice;
+    default: return Event::count;
+    }
+}
 
 /** Room for every mapped key and for ones a hand-edited file names that the map does not. */
 inline constexpr std::size_t kKeyCapacity = 64;

@@ -16,10 +16,22 @@ namespace sunrise::state::activity::events {
  * The file stays the source of truth so the presets in `event_presets` and hand edits work the
  * same way the page does. One hex key per line, `0x` optional, `#` comments. No file, or an empty
  * one, withholds nothing: every event shows.
+ *
+ * The selection also owns the events' unlock flags in the family-5 override list (see
+ * `kEventFlags`): a shown event's flags are set live and a hidden event's are cleared, whatever
+ * settings.json authored for those slots. That happens from the pending set as soon as it is
+ * known, because the client asks for its investment object when a Tower load begins, before the
+ * join that copies the pending roster set into the published one.
  */
 
 /** Re-reads the file into both sets. Called on a fresh activity join, and once on first use. */
 void reload() noexcept;
+
+/**
+ * Loads the file if nothing has yet. The family-5 responders call this first, so the very first
+ * investment object the client receives already carries the selection's event flags.
+ */
+void ensure_loaded() noexcept;
 
 /**
  * @param key Registry key the roster is about to publish.
@@ -40,5 +52,14 @@ void snapshot(KeySet& published, KeySet& pending) noexcept;
  * @return True when every byte reached the file.
  */
 [[nodiscard]] bool save(const KeySet& pending) noexcept;
+
+/** @return Which theme the Tower is asked to play; `event_music.txt` beside settings.json. */
+[[nodiscard]] Music music() noexcept;
+
+/**
+ * Writes the music choice and re-applies the event flags. Heard at the next launch.
+ * @return True when the file was written.
+ */
+[[nodiscard]] bool set_music(Music music) noexcept;
 
 } // namespace sunrise::state::activity::events

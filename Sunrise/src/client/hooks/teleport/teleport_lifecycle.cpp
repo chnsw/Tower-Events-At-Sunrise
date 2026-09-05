@@ -22,6 +22,8 @@
 #include "runtime.h"
 
 #include "../../content/events/event_props.h"
+#include "../network/investment/investment_refetch.h"
+#include "../network/loot_probe.h"
 
 namespace sunrise::client::hooks::teleport {
 namespace {
@@ -91,6 +93,8 @@ std::int64_t __fastcall camera_transform(std::uint32_t playerIndex) noexcept {
     // refreshed. observe_world_step, where this first sat, barely runs and the placement never got
     // a chance to see the player standing anywhere.
     client::content::events::place_event_props();
+    hooks::network::investment::poll_refetch();
+    hooks::network::loot_probe::poll();
     return result;
 }
 

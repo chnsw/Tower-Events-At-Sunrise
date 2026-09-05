@@ -27,6 +27,8 @@ constexpr std::size_t kStatusCapacity = 256;
 
 /** Set when the last save did not reach the file, cleared by the next one that does. */
 bool g_saveFailed{};
+/** Same, for the music choice. */
+bool g_musicFailed{};
 
 /** Draws one wrapped line in the muted text colour. */
 void muted(const char* text) noexcept {
@@ -136,6 +138,24 @@ void draw() noexcept {
 
     if (changed) {
         g_saveFailed = !selection::save(pending);
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextUnformatted("Tower music");
+    int music = static_cast<int>(selection::music());
+    ImGui::SetNextItemWidth(260.0F);
+    if (ImGui::Combo("##tower_music",
+                     &music,
+                     selection::kMusicNames.data(),
+                     static_cast<int>(selection::kMusicCount))) {
+        g_musicFailed = !selection::set_music(static_cast<selection::Music>(music));
+    }
+    label::align();
+    muted("Which event's theme plays. With several events shown the client picks one on its own; "
+          "choose one here to decide. Heard on the next load into a destination: go to orbit and come back in.");
+    if (g_musicFailed) {
+        ImGui::TextUnformatted("event_music.txt could not be written, nothing was saved");
     }
 
     ImGui::Spacing();

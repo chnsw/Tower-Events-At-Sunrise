@@ -6,6 +6,7 @@
 #include <limits>
 
 #include "../../core/logging/log.h"
+#include "account_resync.h"
 #include "../../state/matchmaking/matchmaking_state.h"
 #include "encrypted/bap_connection_publication.h"
 #include "internal.h"
@@ -158,6 +159,9 @@ void clear_session(Session& session) noexcept {
                                        touchesScratch)) {
         response.size += deferred;
     }
+    if (session->accountMutationPublished) {
+        publish_account_mutation(*session);
+    }
     return true;
 }
 
@@ -177,9 +181,13 @@ void clear_session(Session& session) noexcept {
             core::log::Channel::server, core::log::Level::info, "ev=queuez stage=poll result=ok");
     }
     auto* session = session_for(request.connectionId);
-    return session != nullptr
-           && encrypted::consume_deferred(
-               *session, g_scratch, request.response, response.size, touchesScratch);
+    if (session == nullptr) { return false; }
+    const bool published = encrypted::consume_deferred(
+        *session, g_scratch, request.response, response.size, touchesScratch);
+    if (session->accountMutationPublished) {
+        publish_account_mutation(*session);
+    }
+    return published;
 }
 
 } // namespace
@@ -232,6 +240,34 @@ void shutdown() noexcept {
     SecureZeroMemory(&g_scratch, sizeof g_scratch);
     g_accountGeneration = 0;
     ReleaseSRWLockExclusive(&g_lock);
+}
+
+/** Arms every subscribed session for an account resync under a fresh generation. */
+void arm_account_resync_for_all() noexcept {
+    g_accountGeneration = g_accountGeneration == (std::numeric_limits<std::uint64_t>::max)()
+                              ? 1
+                              : g_accountGeneration + 1;
+    std::size_t armed = 0;
+    for (auto& peer : g_sessions) {
+        if (peer.id == 0 || !peer.authenticated || !peer.queuez.family4Active) {
+            continue;
+        }
+        peer.accountGeneration = g_accountGeneration;
+        peer.accountResyncGeneration = g_accountGeneration;
+        peer.accountResyncArmed = true;
+        ++armed;
+    }
+    std::array<char, core::log::kLineCapacity> line{};
+    const int count = std::snprintf(line.data(),
+                                    line.size(),
+                                    "ev=queuez stage=resync_arm_all result=ok generation=%llu peers=%zu",
+                                    static_cast<unsigned long long>(g_accountGeneration),
+                                    armed);
+    if (count > 0) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(count)});
+    }
 }
 
 } // namespace sunrise::server::bap

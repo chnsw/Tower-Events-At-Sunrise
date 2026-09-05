@@ -32,6 +32,7 @@
 #include "../../hooks/teleport/runtime.h"
 #include "../../player/player_position.h"
 #include "../../patterns/image_scan.h"
+#include "../../../state/activity/events/activity_event_selection.h"
 
 namespace sunrise::client::content::events {
 namespace {
@@ -95,6 +96,34 @@ std::array<std::atomic_bool, 3> g_areaPlaced{};
 std::array<std::atomic_bool, 3> g_areaReported{};
 /** Where the first failed placement stopped, so a silent zero can be told apart from a fault. */
 const char* g_lastStep = "-";
+/** The engine call in flight, so a fault names the call that raised it. */
+const char* g_stage = "-";
+/** The last fault: exception code, faulting instruction RVA, and the access address. */
+std::atomic<std::uint32_t> g_faultCode{0};
+std::atomic<std::uint64_t> g_faultRva{0};
+std::atomic<std::uint64_t> g_faultAccess{0};
+
+/** Exception filter: records where the engine call faulted, then unwinds into the handler. */
+int record_fault(EXCEPTION_POINTERS* pointers) noexcept {
+    if (pointers != nullptr && pointers->ExceptionRecord != nullptr) {
+        const EXCEPTION_RECORD& record = *pointers->ExceptionRecord;
+        const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+        const auto at = reinterpret_cast<std::uintptr_t>(record.ExceptionAddress);
+        g_faultCode.store(record.ExceptionCode, std::memory_order_relaxed);
+        g_faultRva.store(at >= base ? at - base : at, std::memory_order_relaxed);
+        g_faultAccess.store(record.NumberParameters >= 2 ? record.ExceptionInformation[1] : 0,
+                            std::memory_order_relaxed);
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+/** @return The fault label for the call in flight. Pointer identity is enough: the labels are literals. */
+const char* fault_label() noexcept {
+    if (g_stage == static_cast<const char*>("initialize")) { return "fault_initialize"; }
+    if (g_stage == static_cast<const char*>("direct")) { return "fault_direct"; }
+    if (g_stage == static_cast<const char*>("instantiate")) { return "fault_instantiate"; }
+    if (g_stage == static_cast<const char*>("factory")) { return "fault_factory"; }
+    return "fault";
+}
 
 constexpr std::uint32_t kInvalidDatum = 0xFFFFFFFFU;
 /** Placement storage: a header the initializer reads, then the arena it builds the descriptor in. */
@@ -133,6 +162,39 @@ constexpr std::array<Placement, 14> kDawningCourtyard{{
     {-8.23F, 42.60F, 25.00F}, {-13.33F, 68.44F, 30.40F}, {43.07F, 59.43F, 29.65F},
     {8.75F, 46.20F, 18.12F}, {41.14F, 10.29F, 19.53F}, {21.49F, 1.28F, 16.03F},
     {-12.60F, 10.75F, 27.11F}, {37.18F, 26.85F, 14.95F}}};
+
+/**
+ * The Guardian Games podium beside Zavala, read on 2026-09-05 from the five slot records under
+ * Courtyard registry key 0x0AFC31B6 (trophy_base 0x80B4AE82, trophy_titan 0x80B4AE85,
+ * trophy_warlock 0x80B4AE88, trophy_hunter 0x80B4AE8B, banner_spotlight 0x80B4AE8E), each holding
+ * one authored 144-byte spawn entry. The roster publishes that group and its entities load, but
+ * the client never creates them: a group's dressing is spawned from its group-level placement
+ * list, and this group's list is the shared empty object 0x80BFDD7B (24 bytes) where every other
+ * Courtyard event carries 11-93 KB of entries. Bungie emptied it when the 2020 Games ended and left
+ * the slot records behind, so the podium can only be placed directly. The three class trophies
+ * share one position; the Titan one is placed because Titans won the 2020 Games.
+ */
+struct AuthoredPlacement {
+    std::uint32_t tag;
+    Placement at;
+    std::array<float, 4> rotation;
+};
+constexpr std::array<AuthoredPlacement, 6> kGuardianGamesPodium{{
+    // Control: the Dawning decoration that the same call placed on 2026-08-27, set down beside the
+    // podium. If it places while the podium pieces fault, the entities differ; if it faults too,
+    // the path itself is refused here.
+    {0x80C4B2F1U, {40.0F, -10.0F, 17.0F}, {0.0F, 0.0F, 0.0F, 1.0F}},
+    {0x8156E846U, {38.20F, -14.99F, 16.98F}, {0.0F, 0.0F, 0.70710677F, 0.70710677F}},
+    {0x8157FF55U, {38.20F, -14.99F, 16.98F}, {0.0F, 0.0F, -0.70710677F, -0.70710677F}},
+    {0x81584569U, {38.20F, -14.99F, 16.98F}, {0.0F, 0.0F, 0.70710677F, 0.70710677F}},
+    {0x8156E8D5U, {38.20F, -14.99F, 16.98F}, {0.0F, 0.0F, -0.70710677F, -0.70710677F}},
+    {0x8156E2CAU, {37.82F, -2.64F, 11.86F}, {0.978F, 0.012F, -0.010F, 0.209F}},
+}};
+constexpr std::uint32_t kGuardianGamesKey = 0x0AFC31B6U;
+/** The podium is placed only while the player stands within this many metres of its base. */
+constexpr float kPodiumReach = 80.0F;
+std::atomic_bool g_podiumPlaced{false};
+std::atomic_bool g_podiumReported{false};
 
 /**
  * Where each Tower area sits relative to the Courtyard.
@@ -226,14 +288,18 @@ void reset_storage(PlacementStorage& storage) noexcept {
 }
 
 /** Instantiates one decoration. @return Its handle, or the invalid datum. */
-[[nodiscard]] std::uint32_t place_one(std::uint32_t tag, const Placement& at) noexcept {
+[[nodiscard]] std::uint32_t place_one(std::uint32_t tag,
+                                      const Placement& at,
+                                      const std::array<float, 4>& rotation) noexcept {
     std::uint32_t handle = kInvalidDatum;
     __try {
         PlacementStorage storage{};
         reset_storage(storage);
+        g_stage = "initialize";
         bool initialized = g_initialize(storage.bytes.data(), tag) != 0;
         if (!initialized && g_directInitialize != nullptr) {
             reset_storage(storage);
+            g_stage = "direct";
             initialized = g_directInitialize(storage.bytes.data(), tag) != 0;
         }
         if (!initialized) {
@@ -241,9 +307,6 @@ void reset_storage(PlacementStorage& storage) noexcept {
             return kInvalidDatum;
         }
         void* const descriptor = descriptor_of(storage);
-        // The authored rotations on these entries are identity or a half turn, and identity is
-        // correct for a decoration, so no quaternion table is carried for no visible difference.
-        const std::array<float, 4> rotation{0.0F, 0.0F, 0.0F, 1.0F};
         const std::array<float, 4> position{at.x, at.y, at.z, 1.0F};
         std::memcpy(static_cast<std::byte*>(descriptor) + kDescriptorRotation,
                     rotation.data(),
@@ -252,15 +315,17 @@ void reset_storage(PlacementStorage& storage) noexcept {
                     position.data(),
                     sizeof position);
         *(static_cast<std::uint8_t*>(descriptor) + kDescriptorFlags) = kAuthoredFlagByte;
+        g_stage = "instantiate";
         (void)g_instantiate(&handle, descriptor);
         if (handle == kInvalidDatum && g_factory != nullptr) {
+            g_stage = "factory";
             (void)g_factory(&handle, descriptor);
         }
         if (handle == kInvalidDatum) {
             g_lastStep = "instantiate";
         }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        g_lastStep = "fault";
+    } __except (record_fault(GetExceptionInformation())) {
+        g_lastStep = fault_label();
         return kInvalidDatum;
     }
     return handle;
@@ -313,12 +378,94 @@ void report(const char* area, std::size_t placed, std::size_t attempted) noexcep
     }
 }
 
+/**
+ * Places the Guardian Games podium once, while the event is shown and the player is near it.
+ * The entities become resolvable only once the Courtyard's own content has loaded, so a refusal
+ * leaves the attempt for a later poll rather than spending it.
+ */
+void place_podium() noexcept {
+    if (g_podiumPlaced.load(std::memory_order_acquire)
+        || state::activity::events::withheld(kGuardianGamesKey)) {
+        return;
+    }
+    const player::position::Snapshot player = player::position::snapshot();
+    if (!player.present) {
+        return;
+    }
+    const hooks::teleport::Vector at = player.position;
+    const Placement& base = kGuardianGamesPodium[0].at;
+    const float dx = at[0] - base.x;
+    const float dy = at[1] - base.y;
+    const float dz = at[2] - base.z;
+    if (dx * dx + dy * dy + dz * dz > kPodiumReach * kPodiumReach) {
+        return;
+    }
+    std::size_t placed = 0;
+    std::array<const char*, kGuardianGamesPodium.size()> steps{};
+    std::array<std::uint32_t, kGuardianGamesPodium.size()> handles{};
+    for (std::size_t index = 0; index < kGuardianGamesPodium.size(); ++index) {
+        const AuthoredPlacement& entry = kGuardianGamesPodium[index];
+        g_lastStep = "-";
+        handles[index] = place_one(entry.tag, entry.at, entry.rotation);
+        steps[index] = g_lastStep;
+        if (handles[index] != kInvalidDatum) {
+            ++placed;
+        }
+    }
+    if (placed == 0) {
+        // One attempt per session: a refused placement has already allocated on the way to the
+        // fault (the census shows the decoration five times), so retrying only leaks objects.
+        g_podiumPlaced.store(true, std::memory_order_release);
+        if (!g_podiumReported.exchange(true, std::memory_order_acq_rel)) {
+            for (std::size_t index = 0; index < kGuardianGamesPodium.size(); ++index) {
+                std::array<char, core::log::kLineCapacity> entryLine{};
+                const int put = std::snprintf(entryLine.data(),
+                                              entryLine.size(),
+                                              "ev=event_props area=podium tag=0x%08X handle=0x%08X step=%s "
+                                              "code=0x%08X rva=0x%llX access=0x%llX",
+                                              kGuardianGamesPodium[index].tag,
+                                              handles[index],
+                                              steps[index],
+                                              g_faultCode.load(std::memory_order_relaxed),
+                                              static_cast<unsigned long long>(
+                                                  g_faultRva.load(std::memory_order_relaxed)),
+                                              static_cast<unsigned long long>(
+                                                  g_faultAccess.load(std::memory_order_relaxed)));
+                if (put > 0) {
+                    core::log::write(core::log::Channel::client,
+                                     core::log::Level::warn,
+                                     {entryLine.data(), static_cast<std::size_t>(put)});
+                }
+            }
+            std::array<char, core::log::kLineCapacity> line{};
+            const int written = std::snprintf(line.data(),
+                                              line.size(),
+                                              "ev=event_props area=podium placed=0 of=%zu step=%s deferred=1",
+                                              kGuardianGamesPodium.size(),
+                                              g_lastStep);
+            if (written > 0) {
+                core::log::write(core::log::Channel::client,
+                                 core::log::Level::warn,
+                                 {line.data(), static_cast<std::size_t>(written)});
+            }
+        }
+        return;
+    }
+    g_podiumPlaced.store(true, std::memory_order_release);
+    report("podium", placed, kGuardianGamesPodium.size());
+}
+
 } // namespace
 
 void place_event_props() noexcept {
     if (!bind() || !g_enabled.load(std::memory_order_acquire)) {
         return;
     }
+    // Diagnostic only, like the translated route: the bare instantiate path faults at RVA
+    // 0x59A03F for the podium pieces and for the Dawning decoration alike (2026-09-05). The podium
+    // is roster content whose placement list the shipped data emptied; restoring it is a data
+    // patch, not a placement.
+    place_podium();
     // Only the area the player is actually in.
     const std::size_t index = occupied_area();
     // Report where the player is and which area that resolves to, a handful of times. Without this
@@ -352,7 +499,9 @@ void place_event_props() noexcept {
         std::size_t placed = 0;
         for (const Placement& source : kDawningCourtyard) {
             const Placement at{source.x + area.dx, source.y + area.dy, source.z + area.dz};
-            if (place_one(kDawningDecoration, at) != kInvalidDatum) {
+            // The authored rotations on these entries are identity or a half turn, and identity
+            // is correct for a decoration.
+            if (place_one(kDawningDecoration, at, {0.0F, 0.0F, 0.0F, 1.0F}) != kInvalidDatum) {
                 ++placed;
             }
         }

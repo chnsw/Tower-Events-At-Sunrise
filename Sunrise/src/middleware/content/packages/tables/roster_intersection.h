@@ -87,7 +87,7 @@ inline constexpr std::array<std::uint16_t, 9> kRosterSlotTypes = {
 // of them always-on scenery, and the switch into other bubbles stops completing. The event subset
 // was separated by package fingerprint: an event object's chain reaches the seasonal packages
 // 0x225/0x228/0x23B, which no plain scenery object does.
-inline constexpr std::array<std::uint32_t, 16> kEventRosterKeys = {
+inline constexpr std::array<std::uint32_t, 18> kEventRosterKeys = {
     0x00ACD208U,   // Dawning (Courtyard)
     0x27060E6CU,   // Iron Banner (Courtyard)
     0x4F4ED92FU,   // Annex o_penumbra_vendor slot (Benedict 99-40); not an event, kept for the baseline
@@ -95,6 +95,8 @@ inline constexpr std::array<std::uint32_t, 16> kEventRosterKeys = {
     0x6CEFCC01U,   // Crimson Days (Courtyard)
     0x7C6DE64FU,   // Festival of the Lost (Courtyard)
     0xD5B68262U,   // Solstice (Courtyard)
+    // 0x0AFC31B6, the Guardian Games podium, is deliberately absent: it publishes but its group
+    // placement list is empty in the shipped data, so nothing renders (2026-09-05).
     // Per-bubble event carriers, found 2026-08-27 by walking each bubble registry's objects to
     // the seasonal packages (0x225/0x228/0x23B) every Courtyard event group also reaches. Each
     // bubble keys its own carrier - 0x80B4AF2C/0x80B4AF3D/0x80B4AF5E/0x80B4AF65 sit beside their
@@ -107,7 +109,12 @@ inline constexpr std::array<std::uint32_t, 16> kEventRosterKeys = {
     0x9052672CU,   // Hangar carrier
     0xDA989AA3U,   // Hangar carrier: the Dawning rink (ball, goals, scoreboards, confetti)
     0xEE34BBABU,   // Hangar carrier
-    0x6E087824U};  // Hangar carrier
+    0x6E087824U,   // Hangar carrier
+    // The Farm (campaign_social_space_d2, one bubble): its Dawning dressing group, d_weather_control
+    // plus a 195-entry placement list of the same package-0x23B entities the Tower's Dawning uses.
+    // Not a wire-slot carrier, so it needs admitting by key like every Tower event (2026-09-05).
+    0xC140FF19U,   // Farm Dawning: weather control + 195 placements
+    0x4488AD94U};  // Farm Crimson Days: heart arch, rose garlands, banners; 64 placements (seen in game 2026-09-05)
 
 /**
  * Tests whether one registry key names a Tower seasonal event object.

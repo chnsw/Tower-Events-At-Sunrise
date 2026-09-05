@@ -311,17 +311,20 @@ bool commit_item_acquisition(PendingItemAcquisition& mutation) noexcept {
     return true;
 }
 
-/** Prepares one checked profile-stack increment or append for a Collections pull. */
+/** Prepares a checked profile-stack grant; Collections retains its one-unit policy. */
 bool prepare_profile_item_acquisition(std::uint16_t collectibleIndex,
                                       std::uint32_t definitionHash,
-                                      PendingProfileItemAcquisition& mutation) noexcept {
+                                      PendingProfileItemAcquisition& mutation,
+                                      std::int32_t amount) noexcept {
     mutation = {};
     const AccountState account = account_snapshot();
     build_data::collectibles::Definition collectible{};
     build_data::items::Definition item{};
     item_details::Definition detail{};
     inventory_buckets::Descriptor bucket{};
-    if (definitionHash == authored_inventory::kNoDefinitionHash || !account::valid(account)
+    if (amount <= 0
+        || (collectibleIndex != build_data::collectibles::kNoCollectibleIndex && amount != 1)
+        || definitionHash == authored_inventory::kNoDefinitionHash || !account::valid(account)
         || !valid_profile_inventory(account)
         || !build_data::find_item_definition_hash(definitionHash, item)
         || item.definitionHash != definitionHash
@@ -336,7 +339,7 @@ bool prepare_profile_item_acquisition(std::uint16_t collectibleIndex,
         || detail.definitionIndex != item.definitionIndex || detail.definitionHash != definitionHash
         || detail.bucketId != item.bucketId
         || detail.instancedDefinitionState != item_details::InstancedDefinitionState::stackable
-        || detail.maxStackSize <= 0
+        || detail.maxStackSize <= 0 || amount > detail.maxStackSize
         || !build_data::find_inventory_bucket_descriptor(detail.bucketId, bucket)
         || bucket.arraySelector != inventory_buckets::ArraySelector::profile) {
         report_profile_acquisition("prepare",
@@ -403,7 +406,7 @@ bool prepare_profile_item_acquisition(std::uint16_t collectibleIndex,
                                        false);
             return false;
         }
-        if (appended && existing.quantity < detail.maxStackSize) {
+        if (appended && existing.quantity <= detail.maxStackSize - amount) {
             profileIndex = index;
             previousQuantity = existing.quantity;
             previousMutationSerial = existing.mutationSerial;
@@ -466,10 +469,10 @@ bool prepare_profile_item_acquisition(std::uint16_t collectibleIndex,
     const std::int32_t acquiredMutationSerial = greatestMutationSerial + 1;
     if (appended) {
         after.profileItems[profileIndex] = {
-            acquiredInstanceSoid, definitionHash, 1, acquiredMutationSerial};
+            acquiredInstanceSoid, definitionHash, amount, acquiredMutationSerial};
         ++after.profileItemCount;
     } else {
-        ++after.profileItems[profileIndex].quantity;
+        after.profileItems[profileIndex].quantity += amount;
         after.profileItems[profileIndex].mutationSerial = acquiredMutationSerial;
     }
     const std::int32_t acquiredQuantity = after.profileItems[profileIndex].quantity;
@@ -502,6 +505,7 @@ bool prepare_profile_item_acquisition(std::uint16_t collectibleIndex,
     mutation.profileIndex = profileIndex;
     mutation.previousQuantity = previousQuantity;
     mutation.acquiredQuantity = acquiredQuantity;
+    mutation.acquiredAmount = amount;
     mutation.previousMutationSerial = previousMutationSerial;
     mutation.acquiredMutationSerial = acquiredMutationSerial;
     mutation.collectibleIndex = collectibleIndex;
